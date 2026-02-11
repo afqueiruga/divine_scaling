@@ -7,6 +7,23 @@ from statistics import mean
 import matplotlib.pyplot as plt
 
 
+def detect_latest_multirun_dir() -> Path:
+    """Detect the latest multirun directory in the default 'multirun' folder."""
+    multirun_root = Path("multirun")
+    if not multirun_root.is_dir():
+        raise FileNotFoundError("No 'multirun' directory found.")
+    all_time_dirs = [
+        d
+        for date_dir in multirun_root.iterdir() if date_dir.is_dir()
+        for d in date_dir.iterdir() if d.is_dir()
+    ]
+    if not all_time_dirs:
+        raise FileNotFoundError("Could not find any valid multirun directories inside 'multirun'.")
+    latest_dir = max(all_time_dirs)
+    print(f"Auto-detected latest multirun_dir: {latest_dir}")
+    return latest_dir
+
+
 def load_metrics(multirun_dir: Path) -> dict[str, dict[int, list[float]]]:
     """Load metrics.json files from one Hydra multirun directory."""
     grouped: dict[str, dict[int, list[float]]] = defaultdict(lambda: defaultdict(list))
@@ -52,8 +69,9 @@ def main() -> None:
         description="Plot test_mse vs n_hidden from a Hydra multirun directory."
     )
     parser.add_argument(
-        "multirun_dir",
+        "--multirun_dir",
         type=Path,
+        default=None,
         help="Path to a Hydra multirun directory, e.g. multirun/2026-02-11/01-41-59",
     )
     parser.add_argument(
@@ -69,7 +87,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    multirun_dir = args.multirun_dir.resolve()
+    if args.multirun_dir is None:
+        multirun_dir = detect_latest_multirun_dir()
+    else:
+       multirun_dir = args.multirun_dir.resolve()
     if not multirun_dir.is_dir():
         raise FileNotFoundError(f"Not a directory: {multirun_dir}")
 
