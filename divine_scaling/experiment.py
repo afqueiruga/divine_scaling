@@ -138,6 +138,8 @@ def main(cfg: ExperimentConfig) -> None:
         "seed": int(cfg.seed),
         "test_mse": float(test_mse),
         "train_mse": float(final_loss),
+        "test_rmse": float(np.sqrt(test_mse)),
+        "train_rmse": float(np.sqrt(final_loss)),
         "optimizer": cfg.optimizer,
     }
     with open(output_dir / "metrics.json", "w", encoding="utf-8") as f:

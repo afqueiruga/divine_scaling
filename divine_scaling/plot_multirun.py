@@ -28,23 +28,18 @@ def detect_latest_multirun_dir() -> Path:
 def load_metrics(multirun_dir: Path) -> dict[str, dict[int, list[float]]]:
     """Load metrics.json files from one Hydra multirun directory."""
     grouped: dict[str, dict[int, list[float]]] = defaultdict(lambda: defaultdict(list))
-
     for child in sorted(multirun_dir.iterdir()):
         if not child.is_dir() or child.name.startswith("."):
             continue
-
         metrics_path = child / "metrics.json"
         if not metrics_path.exists():
             continue
-
         with metrics_path.open("r", encoding="utf-8") as f:
             metrics = json.load(f)
-
         model_arch = str(metrics["model_arch"])
         n_hidden = int(metrics["n_hidden"])
-        test_mse = float(metrics["test_mse"])
-        grouped[model_arch][n_hidden].append(test_mse)
-
+        test_rmse = float(metrics["test_rmse"])
+        grouped[model_arch][n_hidden].append(test_rmse)
     return grouped
 
 
@@ -101,15 +96,15 @@ def plot_metrics(grouped: dict[str, dict[int, list[float]]]) -> None:
             )
             print(
                 f"log-log regression [{model_arch}]: "
-                f"log(test_mse) = {intercept:.6f} + {slope:.6f} * log(n_hidden), "
+                f"log(test_rmse) = {intercept:.6f} + {slope:.6f} * log(n_hidden), "
                 f"r^2={r_squared:.6f}"
             )
         except ValueError as exc:
             print(f"Skipping log-log regression for {model_arch}: {exc}")
 
     plt.xlabel("n_hidden")
-    plt.ylabel("test_mse")
-    plt.title("Hydra sweep: test_mse vs n_hidden")
+    plt.ylabel("test_rmse")
+    plt.title("Hydra sweep: test_rmse vs n_hidden")
     plt.grid(True, alpha=0.3)
     plt.legend(title="model_arch")
     plt.tight_layout()
