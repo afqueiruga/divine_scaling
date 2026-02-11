@@ -9,6 +9,20 @@ def get_trainable_params(model):
     return {k: v for k, v in model.named_parameters() if v.requires_grad}
 
 
+def _backtracking_line_search(
+    obj_func, x_init, t, d, f, g, gtd, c1=1e-4, rho=0.5, max_iter=20
+):
+    """Simple backtracking line search for Newton's method."""
+    alpha = t
+    for i in range(max_iter):
+        f_new, g_new = obj_func(x_init, alpha, d)   # Evaluate new objective and gradient
+        if f_new <= f + c1 * alpha * gtd:           # Check Armijo condition
+            return f_new, g_new, alpha, i + 1
+        alpha *= rho                                # Reduce step size
+    f_final, g_final = obj_func(x_init, alpha, d)   # If no good step found, return very small step
+    return f_final, g_final, alpha, max_iter
+
+
 def compute_hessian_and_grad(model, loss_fn, x, y):
     """
     Compute Hessian matrix and gradient vector for a model's loss
@@ -108,19 +122,76 @@ class Newton(Optimizer):
             p.add_(update[offset : offset + numel].view_as(p), alpha=step_size)
             offset += numel
 
+    def _clone_param(self):
+        return [p.clone(memory_format=torch.contiguous_format) for p in self._params]
+
+    def _set_param(self, params_data):
+        for p, pdata in zip(self._params, params_data):
+            p.copy_(pdata)
+
+    def _directional_evaluate(self, loss_fn, x, y, x_params, t, d):
+        """Evaluate loss and gradient in a given direction for line search."""
+        # Move in direction d with step size t
+        self._add_grad(t, d)
+        # Enable gradients temporarily for loss and gradient computation
+        with torch.enable_grad():
+            # Forward pass and loss computation
+            y_pred = self._model(x)
+            loss = loss_fn(y_pred, y)
+            loss_val = float(loss.detach())
+            # Zero gradients and compute new gradients
+            self._model.zero_grad()
+            loss.backward()
+            flat_grad = self._gather_flat_grad()
+        # Restore original parameters
+        self._set_param(x_params)
+        return loss_val, flat_grad
+
     @torch.no_grad()
     def step(self, loss_fn, x, y):
         group = self.param_groups[0]
         lr = group["lr"]
         damping = group["damping"]
+        line_search_fn = group["line_search_fn"]
         # Compute Hessian and gradient at current position
         hessian_matrix, grad_vec = compute_hessian_and_grad(self._model, loss_fn, x, y)
         # Solve to get the ideal Newton step, which we will line search along.
         newton_dir = solve_with_preconditioning(
             hessian_matrix, grad_vec, t_reg=damping, return_info=False
         )
-        # Just vanilla Newton step with the fixed step size.
-        self._add_grad(lr, newton_dir)
+        # Compute initial loss and directional derivative
+        orig_loss = loss_fn(self._model(x), y)
+        loss_val = float(orig_loss)
+        gtd = grad_vec.dot(newton_dir)  # directional derivative
+
+        # Check if Newton direction is a descent direction
+        if gtd >= 0:
+            # Newton direction is not a descent direction (Hessian not positive definite)
+            # Fall back to steepest descent direction (unnormalized)
+            newton_dir = -grad_vec
+            gtd = -grad_vec.dot(grad_vec)  # = -||g||^2, guaranteed negative
+
+        # Apply line search or fixed step
+        if line_search_fn is not None:
+            # Store initial parameters
+            x_init = self._clone_param()
+            def obj_func(x_params, t, d):
+                return self._directional_evaluate(loss_fn, x, y, x_params, t, d)
+            step_size = lr
+            # Choose line search method
+            if line_search_fn == "strong_wolfe":
+                _line_search = _strong_wolfe
+            elif line_search_fn == "backtracking":
+                _line_search = _backtracking_line_search
+            else:
+                raise RuntimeError(f"line search method '{line_search_fn}' not supported")
+            loss_val, grad_vec_ls, step_size, ls_func_evals = _line_search(
+                obj_func, x_init, step_size, newton_dir, loss_val, grad_vec, gtd)
+            # Apply the optimal step found by line search
+            self._add_grad(step_size, newton_dir)
+        else:
+            # Just vanilla Newton step with the fixed step size.
+            self._add_grad(lr, newton_dir)
 
         # Return final loss and gradient magnitude at new position
         # Note: We always recompute the gradient at the final position

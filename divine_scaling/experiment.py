@@ -34,31 +34,41 @@ class ExperimentConfig:
     n_data: int = 2_000
     seed: int = 0
     apply_maso_init: bool = False
-    maso_init_kwargs: dict[str, Any] = field(default_factory=lambda: {})
+    maso_init_kwargs: dict[str, Any] = field(
+        default_factory=lambda: {"alternating_gates": True}
+    )
     optimizer: str = "adam"
-    hydra: Any = field(default_factory=lambda: {
-        "run": {
-            "dir": "outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}_${model_arch}_${n_hidden}",
-        },
-        "sweep": {
-            "dir": "multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}",
-            "subdir": "${hydra.job.num}_${model_arch}_${n_hidden}",
-        },
-    })
+    newton_kwargs: dict[str, Any] = field(
+        default_factory=lambda: {"line_search_fn": "strong_wolfe", "damping": 0.0}
+    )
+    hydra: Any = field(
+        default_factory=lambda: {
+            "run": {
+                "dir": "outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}_${model_arch}_${n_hidden}",
+            },
+            "sweep": {
+                "dir": "multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}",
+                "subdir": "${hydra.job.num}_${model_arch}_${n_hidden}",
+            },
+        }
+    )
 
 
 cs = ConfigStore.instance()
 cs.store(name="experiment_config", node=ExperimentConfig)
+
 
 def make_1d_problem(f, N_data=2_000):
     """Generate 1D train/test data from a scalar function f."""
     X_train = 2 * np.random.rand(N_data, 1) - 1
     X_test = np.linspace(-1, 1, N_data).reshape(-1, 1)
     Y_train, Y_test = f(X_train), f(X_test)
-    return (torch.from_numpy(X_train).to(device, dtype=dtype),
-            torch.from_numpy(Y_train).to(device, dtype=dtype),
-            torch.from_numpy(X_test).to(device, dtype=dtype),
-            torch.from_numpy(Y_test).to(device, dtype=dtype))
+    return (
+        torch.from_numpy(X_train).to(device, dtype=dtype),
+        torch.from_numpy(Y_train).to(device, dtype=dtype),
+        torch.from_numpy(X_test).to(device, dtype=dtype),
+        torch.from_numpy(Y_test).to(device, dtype=dtype),
+    )
 
 
 def optimize_adam(model, criterion, X_train, Y_train):
@@ -74,12 +84,13 @@ def optimize_adam(model, criterion, X_train, Y_train):
     return loss
 
 
-def optimize_newton(model, criterion, X_train, Y_train):
-    opt_newton = Newton(model, line_search_fn="strong_wolfe", damping=0.0)
+def optimize_newton(model, criterion, X_train, Y_train, newton_kwargs):
+    opt_newton = Newton(model, **newton_kwargs)
     for i in (t:=tqdm.trange(10)):
         loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
         t.set_postfix(loss=loss)
     return loss
+
 
 @hydra.main(version_base=None, config_name="experiment_config")
 def main(cfg: ExperimentConfig) -> None:
@@ -93,11 +104,11 @@ def main(cfg: ExperimentConfig) -> None:
     @torch.no_grad()
     def get_test_loss(X, Y):
         return criterion(model(X), Y).item()
-    
+
     if cfg.optimizer == "adam":
         final_loss = optimize_adam(model, criterion, X_train, Y_train)
     elif cfg.optimizer == "newton":
-        final_loss = optimize_newton(model, criterion, X_train, Y_train)
+        final_loss = optimize_newton(model, criterion, X_train, Y_train, cfg.newton_kwargs)
     else:
         raise ValueError(f"Optimizer {cfg.optimizer} not supported")
     test_mse = get_test_loss(X_test, Y_test)
