@@ -14,11 +14,11 @@ import tqdm
 
 
 try:
-    from .newton_optimizer import Newton
+    from .newton_optimizer import Newton, set_grad
     from .models import build_model
 except ImportError:
     from models import build_model
-    from newton_optimizer import Newton
+    from newton_optimizer import Newton, set_grad
 
 device = "cpu"
 dtype = torch.float64
@@ -92,6 +92,22 @@ def optimize_newton(model, criterion, X_train, Y_train, newton_kwargs):
     return loss
 
 
+def optimize_only_splines(model, criterion, X_train, Y_train, newton_kwargs):
+    set_grad(model, ["D"])
+    opt_newton = Newton(model, **newton_kwargs)
+    for i in (t:=tqdm.trange(3)):
+        loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
+        t.set_postfix(loss=loss)
+    any_enabled = set_grad(model, ["U"])
+    if not any_enabled:  # Early exit on MLP
+        return loss
+    opt_newton = Newton(model, **newton_kwargs)
+    for i in (t:=tqdm.trange(3)):
+        loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
+        t.set_postfix(loss=loss)
+    return loss
+
+
 @hydra.main(version_base=None, config_name="experiment_config")
 def main(cfg: ExperimentConfig) -> None:
     torch.manual_seed(cfg.seed)
@@ -109,6 +125,8 @@ def main(cfg: ExperimentConfig) -> None:
         final_loss = optimize_adam(model, criterion, X_train, Y_train)
     elif cfg.optimizer == "newton":
         final_loss = optimize_newton(model, criterion, X_train, Y_train, cfg.newton_kwargs)
+    elif cfg.optimizer == "newton_only_splines":
+        final_loss = optimize_only_splines(model, criterion, X_train, Y_train, cfg.newton_kwargs)
     else:
         raise ValueError(f"Optimizer {cfg.optimizer} not supported")
     test_mse = get_test_loss(X_test, Y_test)

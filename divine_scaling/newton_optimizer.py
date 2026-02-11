@@ -3,9 +3,29 @@ from torch.optim.optimizer import Optimizer
 from torch.func import jacrev, hessian, functional_call
 from torch.optim.lbfgs import _strong_wolfe
 import scipy
+import torch.nn as nn
 
 
-def get_trainable_params(model):
+def set_grad(
+    model: nn.Module, modules: list[str] | None, enable_all: bool = False
+) -> bool:
+    """Freeze all parameters except for the selected modules."""
+    enabled = set(modules or [])
+    any_enabled = False
+    for name, p in model.named_parameters():
+        if enable_all:
+            p.requires_grad_(True)
+            any_enabled = True
+            continue
+        top_level = name.split(".", 1)[0]
+        is_enabled = top_level in enabled or name in enabled
+        p.requires_grad_(is_enabled)
+        if is_enabled:
+            any_enabled = True
+    return any_enabled
+
+
+def get_trainable_params(model: nn.Module):
     return {k: v for k, v in model.named_parameters() if v.requires_grad}
 
 

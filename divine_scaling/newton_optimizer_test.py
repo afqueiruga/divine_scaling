@@ -6,6 +6,15 @@ from divine_scaling import newton_optimizer
 
 
 class NewtonOptimizerTest(unittest.TestCase):
+    class _BlockModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.D = nn.Linear(3, 3)
+            self.U = nn.Linear(3, 3)
+            self.Q = nn.Linear(3, 3)
+            self.G = nn.Linear(3, 3)
+            self.extra = nn.Linear(3, 3)
+
     def _run_linear_regression_step(self, line_search_fn):
         torch.manual_seed(0)
         model = nn.Linear(1, 1, bias=False)
@@ -38,6 +47,41 @@ class NewtonOptimizerTest(unittest.TestCase):
 
     def test_optimize_linear_model_line_search_strong_wolfe(self):
         self._run_linear_regression_step(line_search_fn="strong_wolfe")
+
+    def test_set_grad_enables_selected_blocks_and_disables_others(self):
+        model = self._BlockModel()
+        any_enabled = newton_optimizer.set_grad(model, ["U", "extra"])
+        self.assertTrue(any_enabled)
+
+        for p in model.U.parameters():
+            self.assertTrue(p.requires_grad)
+        for p in model.extra.parameters():
+            self.assertTrue(p.requires_grad)
+
+        for p in model.D.parameters():
+            self.assertFalse(p.requires_grad)
+        for p in model.Q.parameters():
+            self.assertFalse(p.requires_grad)
+        for p in model.G.parameters():
+            self.assertFalse(p.requires_grad)
+
+    def test_set_grad_freezes_all_when_no_blocks_selected(self):
+        model = self._BlockModel()
+        any_enabled = newton_optimizer.set_grad(model, [])
+        self.assertFalse(any_enabled)
+        self.assertTrue(all(not p.requires_grad for p in model.parameters()))
+
+    def test_set_grad_enable_all_option_enables_all_parameters(self):
+        model = self._BlockModel()
+        any_enabled = newton_optimizer.set_grad(model, [], enable_all=True)
+        self.assertTrue(any_enabled)
+        self.assertTrue(all(p.requires_grad for p in model.parameters()))
+
+    def test_set_grad_returns_false_when_names_do_not_match_any_parameter(self):
+        model = self._BlockModel()
+        any_enabled = newton_optimizer.set_grad(model, ["does_not_exist"])
+        self.assertFalse(any_enabled)
+        self.assertTrue(all(not p.requires_grad for p in model.parameters()))
 
 
 if __name__ == "__main__":
