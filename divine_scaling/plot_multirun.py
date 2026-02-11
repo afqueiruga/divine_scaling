@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean
@@ -47,6 +48,37 @@ def load_metrics(multirun_dir: Path) -> dict[str, dict[int, list[float]]]:
     return grouped
 
 
+def fit_loglog_regression(x_vals: list[int], y_vals: list[float]) -> tuple[float, float, float]:
+    """Fit log(y) = intercept + slope * log(x), return slope, intercept, r^2."""
+    if len(x_vals) != len(y_vals):
+        raise ValueError("x_vals and y_vals must have the same length.")
+    if len(x_vals) < 2:
+        raise ValueError("Need at least 2 points for regression.")
+    if any(x <= 0 for x in x_vals) or any(y <= 0 for y in y_vals):
+        raise ValueError("Log-log regression requires all x and y values to be positive.")
+
+    log_x = [math.log(x) for x in x_vals]
+    log_y = [math.log(y) for y in y_vals]
+
+    n = len(log_x)
+    mean_x = sum(log_x) / n
+    mean_y = sum(log_y) / n
+    ss_xx = sum((x - mean_x) ** 2 for x in log_x)
+    if ss_xx == 0:
+        raise ValueError("Cannot fit regression when all x values are identical.")
+
+    ss_xy = sum((x - mean_x) * (y - mean_y) for x, y in zip(log_x, log_y))
+    slope = ss_xy / ss_xx
+    intercept = mean_y - slope * mean_x
+
+    y_hat = [intercept + slope * x for x in log_x]
+    ss_tot = sum((y - mean_y) ** 2 for y in log_y)
+    ss_res = sum((y - y_pred) ** 2 for y, y_pred in zip(log_y, y_hat))
+    r_squared = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 1.0
+
+    return slope, intercept, r_squared
+
+
 def plot_metrics(grouped: dict[str, dict[int, list[float]]]) -> None:
     plt.figure(figsize=(8, 5))
 
@@ -54,7 +86,26 @@ def plot_metrics(grouped: dict[str, dict[int, list[float]]]) -> None:
         hidden_to_mse = grouped[model_arch]
         x_vals = sorted(hidden_to_mse.keys())
         y_vals = [mean(hidden_to_mse[n_hidden]) for n_hidden in x_vals]
-        plt.loglog(x_vals, y_vals, label=model_arch)
+        (line,) = plt.loglog(x_vals, y_vals, label=model_arch)
+
+        try:
+            slope, intercept, r_squared = fit_loglog_regression(x_vals, y_vals)
+            fit_y_vals = [math.exp(intercept) * (x ** slope) for x in x_vals]
+            plt.loglog(
+                x_vals,
+                fit_y_vals,
+                linestyle="--",
+                color=line.get_color(),
+                alpha=0.9,
+                label=f"{model_arch} fit",
+            )
+            print(
+                f"log-log regression [{model_arch}]: "
+                f"log(test_mse) = {intercept:.6f} + {slope:.6f} * log(n_hidden), "
+                f"r^2={r_squared:.6f}"
+            )
+        except ValueError as exc:
+            print(f"Skipping log-log regression for {model_arch}: {exc}")
 
     plt.xlabel("n_hidden")
     plt.ylabel("test_mse")
