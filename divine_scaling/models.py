@@ -49,4 +49,13 @@ class GLU(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.D(self.act(self.G(x)) * self.U(x))
-        
+
+
+def build_model(model_arch: str, n_hidden: int) -> nn.Module:
+    model_map = {
+        "mlp": MLP,
+        "glu": GLU,
+    }
+    if model_arch not in model_map:
+        raise ValueError(f"Unknown model_arch='{model_arch}'. Use one of {list(model_map)}")
+    return model_map[model_arch](n_x=1, n_h=int(n_hidden), n_y=1)

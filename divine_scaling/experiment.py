@@ -1,16 +1,22 @@
-import hydra
+from typing import Any
+
+from dataclasses import dataclass, field
+from pathlib import Path
+import json
+
 import numpy as np
 import torch
 import torch.nn as nn
-from dataclasses import dataclass
+import hydra
 from hydra.core.config_store import ConfigStore
-from omegaconf import OmegaConf
+from hydra.core.hydra_config import HydraConfig
 import tqdm
 
+
 try:
-    from .models import GLU, MLP
+    from .models import build_model
 except ImportError:
-    from models import GLU, MLP
+    from models import build_model
 
 device = "cpu"
 dtype = torch.float32
@@ -25,6 +31,15 @@ class ExperimentConfig:
     n_hidden: int = 64       # int parameter to sweep
     n_data: int = 2_000
     seed: int = 0
+    hydra: Any = field(default_factory=lambda: {
+        "run": {
+            "dir": "outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}_${model_arch}_${n_hidden}",
+        },
+        "sweep": {
+            "dir": "multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}",
+            "subdir": "${hydra.job.num}_${model_arch}_${n_hidden}",
+        },
+    })
 
 
 cs = ConfigStore.instance()
@@ -39,16 +54,6 @@ def make_1d_problem(f, N_data=2_000):
             torch.from_numpy(Y_train).to(device, dtype=dtype),
             torch.from_numpy(X_test).to(device, dtype=dtype),
             torch.from_numpy(Y_test).to(device, dtype=dtype))
-
-
-def build_model(model_arch: str, n_hidden: int) -> nn.Module:
-    model_map = {
-        "mlp": MLP,
-        "glu": GLU,
-    }
-    if model_arch not in model_map:
-        raise ValueError(f"Unknown model_arch='{model_arch}'. Use one of {list(model_map)}")
-    return model_map[model_arch](n_x=1, n_h=int(n_hidden), n_y=1)
 
 
 @hydra.main(version_base=None, config_name="experiment_config")
@@ -73,9 +78,20 @@ def main(cfg: ExperimentConfig) -> None:
     for i in (t:=tqdm.trange(1_000)):
         loss = opt_adam.step(train_step)
         t.set_postfix(loss=loss)
-    mse = get_test_loss(X_test, Y_test)
-    print(OmegaConf.to_yaml(cfg))
-    print(f"Built {cfg.model_arch} with n_hidden={cfg.n_hidden}; test_mse={mse:.6f}")
+    test_mse = get_test_loss(X_test, Y_test)
+
+    output_dir = Path(HydraConfig.get().runtime.output_dir)
+    metrics = {
+        "model_arch": cfg.model_arch,
+        "n_hidden": int(cfg.n_hidden),
+        "seed": int(cfg.seed),
+        "test_mse": float(test_mse),
+        "train_mse": float(loss),
+    }
+    with open(output_dir / "metrics.json", "w", encoding="utf-8") as f:
+        json.dump(metrics, f, indent=2, sort_keys=True)
+    print(f"Wrote results to {output_dir / 'metrics.json'}")
+
 
 if __name__ == "__main__":
     main()
