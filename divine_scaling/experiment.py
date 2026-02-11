@@ -31,6 +31,8 @@ class ExperimentConfig:
     n_hidden: int = 64       # int parameter to sweep
     n_data: int = 2_000
     seed: int = 0
+    apply_maso_init: bool = False
+    maso_init_kwargs: dict[str, Any] = field(default_factory=lambda: {})
     hydra: Any = field(default_factory=lambda: {
         "run": {
             "dir": "outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}_${model_arch}_${n_hidden}",
@@ -61,7 +63,7 @@ def main(cfg: ExperimentConfig) -> None:
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
     X_train, Y_train, X_test, Y_test = make_1d_problem(f_one_over_1_p_x2, cfg.n_data)
-    model = build_model(cfg.model_arch, cfg.n_hidden)
+    model = build_model(cfg.model_arch, cfg.n_hidden, cfg.apply_maso_init, cfg.maso_init_kwargs)
     criterion = nn.MSELoss()
     opt_adam = torch.optim.AdamW(model.parameters(), lr=1.0e-4, weight_decay=0.0)
 
