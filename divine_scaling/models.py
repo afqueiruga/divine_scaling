@@ -8,15 +8,12 @@ import torch.nn.functional as F
 @torch.no_grad()
 def maso_init_1d(
     model: nn.Module, b_min=-1.001, b_max=1.001, flip_first_neuron=False,
-    alternating_gates=False, flip_first_neuron_2=False
+    alternating_gates=False
 ):
     """Initialize the model using the spline basis interpretation."""
     model.G.weight.data.fill_(1.0)
     model.G.bias.data.copy_(torch.linspace(b_min, b_max, model.G.bias.size(0)))
     if flip_first_neuron:
-        model.G.weight.data[1] = -1.0
-        model.G.bias.data[1] *= -1.0
-    if flip_first_neuron_2:
         model.G.weight.data[1] = -1.0
         model.G.bias.data *= -1.0
         model.G.bias.data[1] *= -1.0

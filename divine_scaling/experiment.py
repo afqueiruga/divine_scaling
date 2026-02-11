@@ -1,3 +1,4 @@
+from pickletools import optimize
 from typing import Any
 
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ class ExperimentConfig:
     seed: int = 0
     apply_maso_init: bool = False
     maso_init_kwargs: dict[str, Any] = field(default_factory=lambda: {})
+    optimizer: str = "adam"
     hydra: Any = field(default_factory=lambda: {
         "run": {
             "dir": "outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}_${model_arch}_${n_hidden}",
@@ -58,6 +60,19 @@ def make_1d_problem(f, N_data=2_000):
             torch.from_numpy(Y_test).to(device, dtype=dtype))
 
 
+def optimize_adam(model, criterion, X_train, Y_train):
+    opt_adam = torch.optim.AdamW(model.parameters(), lr=1.0e-4, weight_decay=0.0)
+    def train_step():
+        opt_adam.zero_grad()
+        loss = criterion(model(X_train), Y_train)
+        loss.backward()
+        return loss.item()
+    for i in (t:=tqdm.trange(1_000)):
+        loss = opt_adam.step(train_step)
+        t.set_postfix(loss=loss)
+    return loss
+
+
 @hydra.main(version_base=None, config_name="experiment_config")
 def main(cfg: ExperimentConfig) -> None:
     torch.manual_seed(cfg.seed)
@@ -65,21 +80,12 @@ def main(cfg: ExperimentConfig) -> None:
     X_train, Y_train, X_test, Y_test = make_1d_problem(f_one_over_1_p_x2, cfg.n_data)
     model = build_model(cfg.model_arch, cfg.n_hidden, cfg.apply_maso_init, cfg.maso_init_kwargs)
     criterion = nn.MSELoss()
-    opt_adam = torch.optim.AdamW(model.parameters(), lr=1.0e-4, weight_decay=0.0)
-
-    def train_step():
-        opt_adam.zero_grad()
-        loss = criterion(model(X_train), Y_train)
-        loss.backward()
-        return loss.item()
 
     @torch.no_grad()
     def get_test_loss(X, Y):
         return criterion(model(X), Y).item()
     
-    for i in (t:=tqdm.trange(1_000)):
-        loss = opt_adam.step(train_step)
-        t.set_postfix(loss=loss)
+    final_loss = optimize_adam(model, criterion, X_train, Y_train)
     test_mse = get_test_loss(X_test, Y_test)
 
     output_dir = Path(HydraConfig.get().runtime.output_dir)
@@ -88,7 +94,7 @@ def main(cfg: ExperimentConfig) -> None:
         "n_hidden": int(cfg.n_hidden),
         "seed": int(cfg.seed),
         "test_mse": float(test_mse),
-        "train_mse": float(loss),
+        "train_mse": float(final_loss),
     }
     with open(output_dir / "metrics.json", "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2, sort_keys=True)
