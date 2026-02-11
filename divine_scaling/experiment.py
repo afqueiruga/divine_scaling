@@ -1,4 +1,3 @@
-from pickletools import optimize
 from typing import Any
 
 from dataclasses import dataclass, field
@@ -15,12 +14,14 @@ import tqdm
 
 
 try:
+    from .newton_optimizer import Newton
     from .models import build_model
 except ImportError:
     from models import build_model
+    from newton_optimizer import Newton
 
 device = "cpu"
-dtype = torch.float32
+dtype = torch.float64
 
 
 f_one_over_1_p_x2 = lambda x: 1.0 / (1.0 + x**2)
@@ -73,19 +74,32 @@ def optimize_adam(model, criterion, X_train, Y_train):
     return loss
 
 
+def optimize_newton(model, criterion, X_train, Y_train):
+    opt_newton = Newton(model, line_search_fn="strong_wolfe", damping=0.0)
+    for i in (t:=tqdm.trange(10)):
+        loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
+        t.set_postfix(loss=loss)
+    return loss
+
 @hydra.main(version_base=None, config_name="experiment_config")
 def main(cfg: ExperimentConfig) -> None:
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
     X_train, Y_train, X_test, Y_test = make_1d_problem(f_one_over_1_p_x2, cfg.n_data)
     model = build_model(cfg.model_arch, cfg.n_hidden, cfg.apply_maso_init, cfg.maso_init_kwargs)
+    model.to(device, dtype=dtype)
     criterion = nn.MSELoss()
 
     @torch.no_grad()
     def get_test_loss(X, Y):
         return criterion(model(X), Y).item()
     
-    final_loss = optimize_adam(model, criterion, X_train, Y_train)
+    if cfg.optimizer == "adam":
+        final_loss = optimize_adam(model, criterion, X_train, Y_train)
+    elif cfg.optimizer == "newton":
+        final_loss = optimize_newton(model, criterion, X_train, Y_train)
+    else:
+        raise ValueError(f"Optimizer {cfg.optimizer} not supported")
     test_mse = get_test_loss(X_test, Y_test)
 
     output_dir = Path(HydraConfig.get().runtime.output_dir)
@@ -95,6 +109,7 @@ def main(cfg: ExperimentConfig) -> None:
         "seed": int(cfg.seed),
         "test_mse": float(test_mse),
         "train_mse": float(final_loss),
+        "optimizer": cfg.optimizer,
     }
     with open(output_dir / "metrics.json", "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2, sort_keys=True)
