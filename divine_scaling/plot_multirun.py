@@ -76,8 +76,9 @@ def fit_loglog_regression(x_vals: list[int], y_vals: list[float]) -> tuple[float
 
 def plot_metrics(grouped: dict[str, dict[int, list[float]]]) -> None:
     plt.figure(figsize=(8, 5))
+    ax = plt.gca()
 
-    for model_arch in sorted(grouped.keys()):
+    for idx, model_arch in enumerate(sorted(grouped.keys())):
         hidden_to_mse = grouped[model_arch]
         x_vals = sorted(hidden_to_mse.keys())
         y_vals = [mean(hidden_to_mse[n_hidden]) for n_hidden in x_vals]
@@ -93,6 +94,20 @@ def plot_metrics(grouped: dict[str, dict[int, list[float]]]) -> None:
                 color=line.get_color(),
                 alpha=0.9,
                 label=f"{model_arch} fit",
+            )
+            anchor_idx = len(x_vals) // 2
+            anchor_x = x_vals[anchor_idx]
+            anchor_y = fit_y_vals[anchor_idx]
+            x_offset = -18 if idx % 2 == 0 else -18
+            y_offset = 18 if (idx // 2) % 2 == 0 else -22
+            ax.annotate(
+                f"slope={slope:.3f}",
+                xy=(anchor_x, anchor_y),
+                xytext=(x_offset, y_offset),
+                textcoords="offset points",
+                fontsize=9,
+                color=line.get_color(),
+                arrowprops={"arrowstyle": "->", "color": line.get_color(), "lw": 1.0},
             )
             print(
                 f"log-log regression [{model_arch}]: "
