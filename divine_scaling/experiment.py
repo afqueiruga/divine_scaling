@@ -121,6 +121,12 @@ def optimize_newton_layer_cascade(model, criterion, X_train, Y_train, newton_kwa
         for i in (t:=tqdm.trange(3)):
             loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
             t.set_postfix(loss=loss)
+    any_enabled = set_grad(model, ["G"])
+    if any_enabled:
+        opt_newton = Newton(model, **newton_kwargs)
+        for i in (t:=tqdm.trange(3)):
+            loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
+            t.set_postfix(loss=loss)
     set_grad(model, None, enable_all=True)
     opt_newton = Newton(model, **newton_kwargs)
     for i in (t:=tqdm.trange(100)):
