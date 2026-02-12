@@ -109,6 +109,26 @@ def optimize_only_splines(model, criterion, X_train, Y_train, newton_kwargs):
     return loss
 
 
+def optimize_newton_layer_cascade(model, criterion, X_train, Y_train, newton_kwargs):
+    set_grad(model, ["D"])
+    opt_newton = Newton(model, **newton_kwargs)
+    for i in (t:=tqdm.trange(3)):
+        loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
+        t.set_postfix(loss=loss)
+    any_enabled = set_grad(model, ["U"])
+    if any_enabled:
+        opt_newton = Newton(model, **newton_kwargs)
+        for i in (t:=tqdm.trange(3)):
+            loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
+            t.set_postfix(loss=loss)
+    set_grad(model, None, enable_all=True)
+    opt_newton = Newton(model, **newton_kwargs)
+    for i in (t:=tqdm.trange(100)):
+        loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
+        t.set_postfix(loss=loss)
+    return loss
+
+
 @hydra.main(version_base=None, config_name="experiment_config")
 def main(cfg: ExperimentConfig) -> None:
     torch.manual_seed(cfg.seed)
@@ -128,6 +148,8 @@ def main(cfg: ExperimentConfig) -> None:
         final_loss = optimize_newton(model, criterion, X_train, Y_train, cfg.newton_kwargs)
     elif cfg.optimizer == "newton_only_splines":
         final_loss = optimize_only_splines(model, criterion, X_train, Y_train, cfg.newton_kwargs)
+    elif cfg.optimizer == "newton_layer_cascade":
+        final_loss = optimize_newton_layer_cascade(model, criterion, X_train, Y_train, cfg.newton_kwargs)
     else:
         raise ValueError(f"Optimizer {cfg.optimizer} not supported")
     test_mse = get_test_loss(X_test, Y_test)
