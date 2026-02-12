@@ -10,6 +10,7 @@ import torch.nn as nn
 import hydra
 from hydra.core.config_store import ConfigStore
 from hydra.core.hydra_config import HydraConfig
+from omegaconf import OmegaConf
 import tqdm
 
 
@@ -132,15 +133,14 @@ def main(cfg: ExperimentConfig) -> None:
     test_mse = get_test_loss(X_test, Y_test)
 
     output_dir = Path(HydraConfig.get().runtime.output_dir)
+    config_fields = OmegaConf.to_container(cfg, resolve=True)
+    config_fields.pop("hydra", None)
     metrics = {
-        "model_arch": cfg.model_arch,
-        "n_hidden": int(cfg.n_hidden),
-        "seed": int(cfg.seed),
+        **config_fields,
         "test_mse": float(test_mse),
         "train_mse": float(final_loss),
         "test_rmse": float(np.sqrt(test_mse)),
         "train_rmse": float(np.sqrt(final_loss)),
-        "optimizer": cfg.optimizer,
     }
     with open(output_dir / "metrics.json", "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2, sort_keys=True)
