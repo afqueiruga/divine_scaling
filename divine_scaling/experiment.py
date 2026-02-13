@@ -73,6 +73,14 @@ def make_1d_problem(f, N_data=2_000):
     )
 
 
+@torch.no_grad()
+def evaluate_model_on_linspace(model: nn.Module, n_points: int = 1_000) -> tuple[list[float], list[float]]:
+    """Evaluate model predictions on a fixed linspace in [-1, 1]."""
+    x = torch.linspace(-1.0, 1.0, n_points, device=device, dtype=dtype).reshape(-1, 1)
+    y = model(x)
+    return x.squeeze(-1).tolist(), y.squeeze(-1).tolist()
+
+
 def optimize_adam(model, criterion, X_train, Y_train):
     opt_adam = torch.optim.AdamW(model.parameters(), lr=1.0e-4, weight_decay=0.0)
     def train_step():
@@ -107,6 +115,25 @@ def optimize_only_splines(model, criterion, X_train, Y_train, newton_kwargs):
     for i in (t:=tqdm.trange(3)):
         loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
         t.set_postfix(loss=loss)
+    return loss
+
+
+def optimize_splines_and_gates(model, criterion, X_train, Y_train, newton_kwargs):
+    set_grad(model, ["D"])
+    opt_newton = Newton(model, **newton_kwargs)
+    for i in (t:=tqdm.trange(3)):
+        loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
+        t.set_postfix(loss=loss)
+    if set_grad(model, ["U"]):
+        opt_newton = Newton(model, **newton_kwargs)
+        for i in (t:=tqdm.trange(3)):
+            loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
+            t.set_postfix(loss=loss)
+    if set_grad(model, ["G"]):
+        opt_newton = Newton(model, **newton_kwargs)
+        for i in (t:=tqdm.trange(3)):
+            loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
+            t.set_postfix(loss=loss)
     return loss
 
 
@@ -161,11 +188,14 @@ def main(cfg: ExperimentConfig) -> None:
         final_loss = optimize_newton(model, criterion, X_train, Y_train, cfg.newton_kwargs)
     elif cfg.optimizer == "newton_only_splines":
         final_loss = optimize_only_splines(model, criterion, X_train, Y_train, cfg.newton_kwargs)
+    elif cfg.optimizer == "newton_splines_and_gates":
+        final_loss = optimize_splines_and_gates(model, criterion, X_train, Y_train, cfg.newton_kwargs)
     elif cfg.optimizer == "newton_layer_cascade":
         final_loss = optimize_newton_layer_cascade(model, criterion, X_train, Y_train, cfg.newton_kwargs)
     else:
         raise ValueError(f"Optimizer {cfg.optimizer} not supported")
     test_mse = get_test_loss(X_test, Y_test)
+    eval_x, eval_y = evaluate_model_on_linspace(model, n_points=1_000)
 
     output_dir = Path(HydraConfig.get().runtime.output_dir)
     config_fields = OmegaConf.to_container(cfg, resolve=True)
@@ -176,6 +206,8 @@ def main(cfg: ExperimentConfig) -> None:
         "train_mse": float(final_loss),
         "test_rmse": float(np.sqrt(test_mse)),
         "train_rmse": float(np.sqrt(final_loss)),
+        "eval_x": [float(v) for v in eval_x],
+        "eval_y": [float(v) for v in eval_y],
     }
     with open(output_dir / "metrics.json", "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2, sort_keys=True)
