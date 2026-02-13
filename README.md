@@ -7,7 +7,7 @@ This repository contains experiments demonstrating that model architecture choic
 
 The minimal experiment that empirical validates the L(P) scaling slopes takes 10 seconds on CPU:
 ```bash
-python3 -m divine_scaling.experiment -m model_arch=mlp,glu "n_hidden=range(1,103,3)" apply_maso_init=True optimizer=newton_only_splines
+python3 -m divine_scaling.experiment -m model_arch=mlp,glu,gqu "n_hidden=range(1,103,3)" apply_maso_init=True optimizer=newton_only_splines
 python3 -m divine_scaling.plot_multirun --show
 ```
 This will pop up the following graph:

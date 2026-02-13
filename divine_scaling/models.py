@@ -53,6 +53,21 @@ class GLU(nn.Module):
         return self.D(self.act(self.G(x)) * self.U(x))
 
 
+class GQU(nn.Module):
+    def __init__(self, n_x: int, n_h: int, n_y: int, act=F.relu, 
+                 apply_maso_init=False, maso_init_kwargs=None):
+        super().__init__()
+        self.G = nn.Linear(n_x, n_h)
+        self.U = nn.Linear(n_x, n_h)
+        self.Q = nn.Linear(n_x, n_h)
+        self.D = nn.Linear(n_h, n_y)
+        self.act = act
+        if apply_maso_init: maso_init_1d(self, **maso_init_kwargs)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.D(self.act(self.G(x)) * self.U(x) * self.Q(x))
+
+
 def build_model(
     model_arch: str,
     n_hidden: int,
@@ -73,6 +88,7 @@ def build_model(
     model_map = {
         "mlp": MLP,
         "glu": GLU,
+        "gqu": GQU,
     }
     if model_arch not in model_map:
         raise ValueError(f"Unknown model_arch='{model_arch}'. Use one of {list(model_map)}")
