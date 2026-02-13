@@ -1,3 +1,5 @@
+The following license covers the code implementation in this repository. Manuscript pdfs are not covered by this license.
+
 MIT License
 
 Copyright (c) 2026 Alejandro Francisco Queiruga

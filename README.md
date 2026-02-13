@@ -23,6 +23,8 @@ The experiment is managed with hydra configs.
 
 ## Citing
 
+The manuscript preprint is [in this repository](assets/queiruga2026divine_scaling.pdf) and available on arXiv at PLACEHOLDER.
+
 To reference this work, please cite:
 ```
 {paper}
