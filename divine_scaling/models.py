@@ -8,7 +8,7 @@ import torch.nn.functional as F
 @torch.no_grad()
 def maso_init_1d(
     model: nn.Module, b_min=-1.001, b_max=1.001, flip_first_neuron=False,
-    alternating_gates=False
+    alternating_gates=False, g_scale=1.0
 ):
     """Initialize the model using the spline basis interpretation."""
     model.G.weight.data.fill_(1.0)
@@ -21,6 +21,9 @@ def maso_init_1d(
         alternating = (torch.arange(model.G.bias.size(0)) % 2 == 0).float() * 2 - 1
         model.G.weight.data *= alternating.reshape(-1, 1)
         model.G.bias.data *= - alternating
+    if g_scale != 1.0:
+        model.G.weight.data *= g_scale
+        model.G.bias.data *= g_scale
 
 
 class MLP(nn.Module):
@@ -50,11 +53,33 @@ class GLU(nn.Module):
         return self.D(self.act(self.G(x)) * self.U(x))
 
 
-def build_model(model_arch: str, n_hidden: int, apply_maso_init: bool, maso_init_kwargs: dict[str, Any]) -> nn.Module:
+def build_model(
+    model_arch: str,
+    n_hidden: int,
+    activation: str,
+    apply_maso_init: bool,
+    maso_init_kwargs: dict[str, Any],
+) -> nn.Module:
+    activation = activation.lower()
+    activation_map = {
+        "relu": F.relu,
+        "sigmoid": torch.sigmoid,
+    }
+    if activation not in activation_map:
+        raise ValueError(
+            f"Unknown activation='{activation}'. Use one of {list(activation_map)}"
+        )
     model_map = {
         "mlp": MLP,
         "glu": GLU,
     }
     if model_arch not in model_map:
         raise ValueError(f"Unknown model_arch='{model_arch}'. Use one of {list(model_map)}")
-    return model_map[model_arch](n_x=1, n_h=int(n_hidden), n_y=1, apply_maso_init=apply_maso_init, maso_init_kwargs=maso_init_kwargs)
+    return model_map[model_arch](
+        n_x=1,
+        n_h=int(n_hidden),
+        n_y=1,
+        act=activation_map[activation],
+        apply_maso_init=apply_maso_init,
+        maso_init_kwargs=maso_init_kwargs,
+    )

@@ -25,9 +25,11 @@ def detect_latest_multirun_dir() -> Path:
     return latest_dir
 
 
-def load_metrics(multirun_dir: Path) -> dict[str, dict[int, list[float]]]:
+def load_metrics(multirun_dir: Path) -> dict[tuple[str, str], dict[int, list[float]]]:
     """Load metrics.json files from one Hydra multirun directory."""
-    grouped: dict[str, dict[int, list[float]]] = defaultdict(lambda: defaultdict(list))
+    grouped: dict[tuple[str, str], dict[int, list[float]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
     for child in sorted(multirun_dir.iterdir()):
         if not child.is_dir() or child.name.startswith("."):
             continue
@@ -37,9 +39,10 @@ def load_metrics(multirun_dir: Path) -> dict[str, dict[int, list[float]]]:
         with metrics_path.open("r", encoding="utf-8") as f:
             metrics = json.load(f)
         model_arch = str(metrics["model_arch"])
+        activation = str(metrics.get("activation", "relu"))
         n_hidden = int(metrics["n_hidden"])
         test_rmse = float(metrics["test_rmse"])
-        grouped[model_arch][n_hidden].append(test_rmse)
+        grouped[(model_arch, activation)][n_hidden].append(test_rmse)
     return grouped
 
 
@@ -74,15 +77,17 @@ def fit_loglog_regression(x_vals: list[int], y_vals: list[float]) -> tuple[float
     return slope, intercept, r_squared
 
 
-def plot_metrics(grouped: dict[str, dict[int, list[float]]]) -> None:
+def plot_metrics(grouped: dict[tuple[str, str], dict[int, list[float]]]) -> None:
     plt.figure(figsize=(8, 5))
     ax = plt.gca()
 
-    for idx, model_arch in enumerate(sorted(grouped.keys())):
-        hidden_to_mse = grouped[model_arch]
+    for idx, key in enumerate(sorted(grouped.keys())):
+        model_arch, activation = key
+        hidden_to_mse = grouped[key]
         x_vals = sorted(hidden_to_mse.keys())
         y_vals = [mean(hidden_to_mse[n_hidden]) for n_hidden in x_vals]
-        (line,) = plt.loglog(x_vals, y_vals, label=model_arch)
+        label = f"{model_arch} ({activation})"
+        (line,) = plt.loglog(x_vals, y_vals, label=label)
 
         try:
             slope, intercept, r_squared = fit_loglog_regression(x_vals, y_vals)
@@ -93,7 +98,7 @@ def plot_metrics(grouped: dict[str, dict[int, list[float]]]) -> None:
                 linestyle="--",
                 color=line.get_color(),
                 alpha=0.9,
-                label=f"{model_arch} fit",
+                label=f"{label} fit",
             )
             anchor_idx = len(x_vals) // 2
             anchor_x = x_vals[anchor_idx]
@@ -110,12 +115,12 @@ def plot_metrics(grouped: dict[str, dict[int, list[float]]]) -> None:
                 arrowprops={"arrowstyle": "->", "color": line.get_color(), "lw": 1.0},
             )
             print(
-                f"log-log regression [{model_arch}]: "
+                f"log-log regression [{label}]: "
                 f"log(test_rmse) = {intercept:.6f} + {slope:.6f} * log(n_hidden), "
                 f"r^2={r_squared:.6f}"
             )
         except ValueError as exc:
-            print(f"Skipping log-log regression for {model_arch}: {exc}")
+            print(f"Skipping log-log regression for {label}: {exc}")
 
     plt.xlabel("n_hidden")
     plt.ylabel("test_rmse")
