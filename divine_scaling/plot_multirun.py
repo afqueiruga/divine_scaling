@@ -9,8 +9,11 @@ from statistics import mean
 import matplotlib.pyplot as plt
 
 
-def detect_latest_multirun_dir() -> Path:
-    """Detect the latest multirun directory in the default 'multirun' folder."""
+def detect_latest_multirun_dirs(n_latest: int) -> list[Path]:
+    """Detect the latest N multirun directories in the default 'multirun' folder."""
+    if n_latest <= 0:
+        raise ValueError("n_latest must be positive.")
+
     multirun_root = Path("multirun")
     if not multirun_root.is_dir():
         raise FileNotFoundError("No 'multirun' directory found.")
@@ -21,7 +24,13 @@ def detect_latest_multirun_dir() -> Path:
     ]
     if not all_time_dirs:
         raise FileNotFoundError("Could not find any valid multirun directories inside 'multirun'.")
-    latest_dir = max(all_time_dirs)
+    sorted_dirs = sorted(all_time_dirs)
+    return sorted_dirs[-n_latest:]
+
+
+def detect_latest_multirun_dir() -> Path:
+    """Detect the latest multirun directory in the default 'multirun' folder."""
+    latest_dir = detect_latest_multirun_dirs(1)[0]
     print(f"Auto-detected latest multirun_dir: {latest_dir}")
     return latest_dir
 
@@ -44,6 +53,21 @@ def load_metrics(multirun_dir: Path) -> dict[tuple[str, str], dict[int, list[flo
         n_hidden = int(metrics["n_hidden"])
         test_rmse = float(metrics["test_rmse"])
         grouped[(model_arch, activation)][n_hidden].append(test_rmse)
+    return grouped
+
+
+def load_metrics_from_dirs(
+    multirun_dirs: list[Path],
+) -> dict[tuple[str, str], dict[int, list[float]]]:
+    """Load and merge metrics.json data from one or more Hydra multirun directories."""
+    grouped: dict[tuple[str, str], dict[int, list[float]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for multirun_dir in multirun_dirs:
+        per_dir_grouped = load_metrics(multirun_dir)
+        for key, hidden_to_rmse in per_dir_grouped.items():
+            for n_hidden, rmse_values in hidden_to_rmse.items():
+                grouped[key][n_hidden].extend(rmse_values)
     return grouped
 
 
@@ -75,6 +99,14 @@ def load_trial_functions(multirun_dir: Path) -> list[dict[str, object]]:
             }
         )
     return trials
+
+
+def load_trial_functions_from_dirs(multirun_dirs: list[Path]) -> list[dict[str, object]]:
+    """Load and merge per-trial function samples from one or more multirun directories."""
+    merged_trials: list[dict[str, object]] = []
+    for multirun_dir in multirun_dirs:
+        merged_trials.extend(load_trial_functions(multirun_dir))
+    return merged_trials
 
 
 def fit_loglog_regression(x_vals: list[int], y_vals: list[float]) -> tuple[float, float, float]:
@@ -197,6 +229,25 @@ def main() -> None:
         help="Path to a Hydra multirun directory, e.g. multirun/2026-02-11/01-41-59",
     )
     parser.add_argument(
+        "--multirun_dirs",
+        type=Path,
+        nargs="+",
+        default=None,
+        help=(
+            "One or more Hydra multirun directories to aggregate before plotting. "
+            "Example: --multirun_dirs multirun/2026-02-11/01-41-59 multirun/2026-02-12/10-15-22"
+        ),
+    )
+    parser.add_argument(
+        "--latest_n",
+        type=int,
+        default=1,
+        help=(
+            "When --multirun_dir/--multirun_dirs are not set, auto-detect and join the latest N "
+            "multirun directories from ./multirun (default: 1)."
+        ),
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=None,
@@ -226,38 +277,61 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.multirun_dir is None:
-        multirun_dir = detect_latest_multirun_dir()
-    else:
-       multirun_dir = args.multirun_dir.resolve()
-    if not multirun_dir.is_dir():
-        raise FileNotFoundError(f"Not a directory: {multirun_dir}")
+    if args.multirun_dir is not None and args.multirun_dirs is not None:
+        raise ValueError("Use either --multirun_dir or --multirun_dirs, not both.")
+    if args.latest_n <= 0:
+        raise ValueError("--latest_n must be positive.")
+    if (args.multirun_dir is not None or args.multirun_dirs is not None) and args.latest_n != 1:
+        raise ValueError("--latest_n can only be used when --multirun_dir/--multirun_dirs are not set.")
 
-    grouped = load_metrics(multirun_dir)
+    if args.multirun_dirs is not None:
+        multirun_dirs = [d.resolve() for d in args.multirun_dirs]
+    elif args.multirun_dir is None:
+        multirun_dirs = [d.resolve() for d in detect_latest_multirun_dirs(args.latest_n)]
+        if len(multirun_dirs) == 1:
+            print(f"Auto-detected latest multirun_dir: {multirun_dirs[0]}")
+        else:
+            print(f"Auto-detected latest {len(multirun_dirs)} multirun_dirs:")
+            for multirun_dir in multirun_dirs:
+                print(f"  - {multirun_dir}")
+    else:
+        multirun_dirs = [args.multirun_dir.resolve()]
+
+    for multirun_dir in multirun_dirs:
+        if not multirun_dir.is_dir():
+            raise FileNotFoundError(f"Not a directory: {multirun_dir}")
+
+    grouped = load_metrics_from_dirs(multirun_dirs)
     plot_metrics(grouped)
     if args.output is not None:
         output_path = args.output.resolve()
+    elif len(multirun_dirs) == 1:
+        output_path = multirun_dirs[0] / "test_mse_vs_n_hidden.png"
     else:
-        output_path = multirun_dir / "test_mse_vs_n_hidden.png"
+        output_path = Path("joined_test_mse_vs_n_hidden.png").resolve()
     plt.savefig(output_path, dpi=150)
 
+    print(f"Loaded {len(multirun_dirs)} multirun director{'y' if len(multirun_dirs) == 1 else 'ies'}.")
     print(f"Saved plot to {output_path}")
 
     if args.plot_sample_functions:
         if args.num_sample_functions <= 0:
             raise ValueError("--num_sample_functions must be positive.")
-        trials = load_trial_functions(multirun_dir)
+        trials = load_trial_functions_from_dirs(multirun_dirs)
         plot_sample_functions(trials, args.num_sample_functions, args.sample_seed)
         if args.output is not None:
             sample_output_path = output_path.with_name(
                 f"{output_path.stem}_sampled_functions{output_path.suffix}"
             )
+        elif len(multirun_dirs) == 1:
+            sample_output_path = multirun_dirs[0] / "sampled_trial_functions.png"
         else:
-            sample_output_path = multirun_dir / "sampled_trial_functions.png"
+            sample_output_path = Path("joined_sampled_trial_functions.png").resolve()
         plt.savefig(sample_output_path, dpi=150)
         print(f"Saved sampled function plot to {sample_output_path}")
 
-    if args.show: plt.show()
+    if args.show:
+        plt.show()
 
 
 if __name__ == "__main__":
