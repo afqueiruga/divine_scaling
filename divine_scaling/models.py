@@ -63,6 +63,7 @@ def build_model(
     activation = activation.lower()
     activation_map = {
         "relu": F.relu,
+        "gelu": F.gelu,
         "sigmoid": torch.sigmoid,
     }
     if activation not in activation_map:
