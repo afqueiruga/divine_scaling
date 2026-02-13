@@ -94,72 +94,27 @@ def optimize_adam(model, criterion, X_train, Y_train):
     return loss
 
 
-def optimize_newton(model, criterion, X_train, Y_train, newton_kwargs):
+def optimize_newton(model, criterion, X_train, Y_train, newton_kwargs, n_steps: int = 10):
     opt_newton = Newton(model, **newton_kwargs)
-    for i in (t:=tqdm.trange(10)):
+    for i in (t:=tqdm.trange(n_steps)):
         loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
         t.set_postfix(loss=loss)
     return loss
 
 
-def optimize_only_splines(model, criterion, X_train, Y_train, newton_kwargs):
-    set_grad(model, ["D"])
-    opt_newton = Newton(model, **newton_kwargs)
-    for i in (t:=tqdm.trange(3)):
-        loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
-        t.set_postfix(loss=loss)
-    any_enabled = set_grad(model, ["U"])
-    if not any_enabled:  # Early exit on MLP
-        return loss
-    opt_newton = Newton(model, **newton_kwargs)
-    for i in (t:=tqdm.trange(3)):
-        loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
-        t.set_postfix(loss=loss)
-    return loss
-
-
-def optimize_splines_and_gates(model, criterion, X_train, Y_train, newton_kwargs):
-    set_grad(model, ["D"])
-    opt_newton = Newton(model, **newton_kwargs)
-    for i in (t:=tqdm.trange(3)):
-        loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
-        t.set_postfix(loss=loss)
-    if set_grad(model, ["U"]):
-        opt_newton = Newton(model, **newton_kwargs)
-        for i in (t:=tqdm.trange(3)):
-            loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
-            t.set_postfix(loss=loss)
-    if set_grad(model, ["G"]):
-        opt_newton = Newton(model, **newton_kwargs)
-        for i in (t:=tqdm.trange(3)):
-            loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
-            t.set_postfix(loss=loss)
-    return loss
-
-
-def optimize_newton_layer_cascade(model, criterion, X_train, Y_train, newton_kwargs):
-    set_grad(model, ["D"])
-    opt_newton = Newton(model, **newton_kwargs)
-    for i in (t:=tqdm.trange(3)):
-        loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
-        t.set_postfix(loss=loss)
-    any_enabled = set_grad(model, ["U"])
-    if any_enabled:
-        opt_newton = Newton(model, **newton_kwargs)
-        for i in (t:=tqdm.trange(3)):
-            loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
-            t.set_postfix(loss=loss)
-    any_enabled = set_grad(model, ["G"])
-    if any_enabled:
-        opt_newton = Newton(model, **newton_kwargs)
-        for i in (t:=tqdm.trange(3)):
-            loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
-            t.set_postfix(loss=loss)
-    set_grad(model, None, enable_all=True)
-    opt_newton = Newton(model, **newton_kwargs)
-    for i in (t:=tqdm.trange(100)):
-        loss, grad_norm = opt_newton.step(criterion, X_train, Y_train)
-        t.set_postfix(loss=loss)
+def optimize_newton_cascaded(
+    model,
+    criterion,
+    X_train,
+    Y_train,
+    newton_kwargs,
+    stages: list[str],
+):
+    loss = None
+    for stage in stages:
+        any_enabled = set_grad(model, stage, enable_all=(stage == "ALL"))
+        if not any_enabled: continue
+        loss = optimize_newton(model, criterion, X_train, Y_train, newton_kwargs, n_steps=100 if stage == "ALL" else 3)
     return loss
 
 
@@ -187,11 +142,17 @@ def main(cfg: ExperimentConfig) -> None:
     elif cfg.optimizer == "newton":
         final_loss = optimize_newton(model, criterion, X_train, Y_train, cfg.newton_kwargs)
     elif cfg.optimizer == "newton_only_splines":
-        final_loss = optimize_only_splines(model, criterion, X_train, Y_train, cfg.newton_kwargs)
+        final_loss = optimize_newton_cascaded(
+            model, criterion, X_train, Y_train, cfg.newton_kwargs, stages=["D", "U"]
+        )
     elif cfg.optimizer == "newton_splines_and_gates":
-        final_loss = optimize_splines_and_gates(model, criterion, X_train, Y_train, cfg.newton_kwargs)
+        final_loss = optimize_newton_cascaded(
+            model, criterion, X_train, Y_train, cfg.newton_kwargs, stages=["D", "U", "G"]
+        )
     elif cfg.optimizer == "newton_layer_cascade":
-        final_loss = optimize_newton_layer_cascade(model, criterion, X_train, Y_train, cfg.newton_kwargs)
+        final_loss = optimize_newton_cascaded(
+            model, criterion, X_train, Y_train, cfg.newton_kwargs, stages=["D", "U", "G", "ALL"]
+        )
     else:
         raise ValueError(f"Optimizer {cfg.optimizer} not supported")
     test_mse = get_test_loss(X_test, Y_test)
