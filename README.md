@@ -23,9 +23,17 @@ The experiment is managed with hydra configs.
 
 ## Citing
 
-The manuscript preprint is [in this repository](assets/queiruga2026divine_scaling.pdf) and available on arXiv at PLACEHOLDER.
+The manuscript preprint is [in this repository](assets/queiruga2026divine_scaling.pdf) and available on arXiv at [https://arxiv.org/abs/2602.14495](https://arxiv.org/abs/2602.14495).
 
 To reference this work, please cite:
 ```
-{paper}
+@misc{queiruga2026divine,
+      title={Divine Benevolence is an $x^2$: GLUs scale asymptotically faster than MLPs}, 
+      author={Alejandro Francisco Queiruga},
+      year={2026},
+      eprint={2602.14495},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2602.14495}, 
+}
 ```
