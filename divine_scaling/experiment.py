@@ -136,15 +136,15 @@ def main(cfg: ExperimentConfig) -> None:
         final_loss = optimize_newton(model, criterion, X_train, Y_train, cfg.newton_kwargs)
     elif cfg.optimizer == "newton_only_splines":
         final_loss = optimize_newton_cascaded(
-            model, criterion, X_train, Y_train, cfg.newton_kwargs, stages=["D", "U", "Q"]
+            model, criterion, X_train, Y_train, cfg.newton_kwargs, stages=["D", "U", "Q", "Q2"]
         )
     elif cfg.optimizer == "newton_splines_and_gates":
         final_loss = optimize_newton_cascaded(
-            model, criterion, X_train, Y_train, cfg.newton_kwargs, stages=["D", "U", "Q", "G"]
+            model, criterion, X_train, Y_train, cfg.newton_kwargs, stages=["D", "U", "Q", "Q2", "G"]
         )
     elif cfg.optimizer == "newton_layer_cascade":
         final_loss = optimize_newton_cascaded(
-            model, criterion, X_train, Y_train, cfg.newton_kwargs, stages=["D", "U", "Q", "G", "ALL"]
+            model, criterion, X_train, Y_train, cfg.newton_kwargs, stages=["D", "U", "Q", "Q2", "G", "ALL"]
         )
     else:
         raise ValueError(f"Optimizer {cfg.optimizer} not supported")
