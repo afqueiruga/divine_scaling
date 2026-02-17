@@ -1,4 +1,3 @@
-import pathlib
 import textwrap
 import typing
 import types
@@ -7,8 +6,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
+import h5py
 
 import torch
 from torch import nn
@@ -26,48 +24,54 @@ torch.set_grad_enabled(False)
 
 
 class GateTracker():
-    """Hooks each MLP layer and streams gate activations to per-layer parquet files.
+    """Hooks each MLP layer and streams activations to a single HDF5 file.
 
-    Output layout:
-        <output_dir>/layer_000.parquet
-        <output_dir>/layer_001.parquet
-        ...
-
-    Each file is a single-column table:
-        activation: fixed_size_list<float32>[n_neurons]   (one row = one token position)
-
-    Row groups correspond to individual forward-pass batches, so the writer never
-    holds more than one batch in memory at a time.
+    Output layout (one file, datasets resized as batches arrive):
+        activations.h5
+            layer_000/
+                input   (n_tokens, d_model)  float32
+                output  (n_tokens, d_model)  float32
+            layer_001/
+                ...
     """
 
-    def __init__(self, gemma_lm, output_dir: str = "activations"):
+    def __init__(self, gemma_lm, output_path: str = "activations.h5"):
         self.gemma_lm = gemma_lm
         self.n_layers = len(gemma_lm.layers)
         self.d_model = gemma_lm.config.hidden_size
-        self.output_dir = pathlib.Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        schema = pa.schema([
-            pa.field("activation", pa.list_(pa.float32(), self.d_model))
-        ])
-        self._writers: list[pq.ParquetWriter] = [
-            pq.ParquetWriter(str(self.output_dir / f"layer_{i:03d}.parquet"), schema)
-            for i in range(self.n_layers)
-        ]
+        self._file = h5py.File(output_path, "w")
+        # Pre-create one resizable dataset per layer per signal.
+        for i in range(self.n_layers):
+            grp = self._file.create_group(f"layer_{i:03d}")
+            for signal in ("input", "output"):
+                grp.create_dataset(
+                    signal,
+                    shape=(0, self.d_model),
+                    maxshape=(None, self.d_model),  # unlimited along axis 0
+                    dtype="float32",
+                    chunks=(512, self.d_model),     # one chunk ≈ 512 tokens
+                )
+        # Set by the main loop before each forward pass so hooks can mask padding.
+        self.attention_mask: torch.Tensor | None = None
         self.hooks: list = []
 
     def close(self):
-        "Flush and close all open parquet writers."
-        for w in self._writers: w.close()
+        "Flush and close the HDF5 file."
+        self._file.close()
 
     def make_mlp_hook(self, layer_idx: int):
         """Create a closure over layer_idx. Each layer gets its own hook."""
         def hook(module_, inputs_, output_):
-            x = output_
-            if x.dim() == 3: x = x.flatten(0, 1)  # (batch * seq, d_model)
-            flat = pa.array(x.cpu().float().numpy().ravel(), type=pa.float32())
-            col = pa.FixedSizeListArray.from_arrays(flat, self.d_model)
-            self._writers[layer_idx].write_table(pa.table({"activation": col}))
+            # attention_mask: (batch, seq) — 1 for real tokens, 0 for padding.
+            mask = self.attention_mask.flatten().bool().cpu()  # (batch*seq,)
+            x = inputs_[0].flatten(0, 1).cpu().float()[mask].numpy()  # (real_tokens, d_model)
+            y = output_.flatten(0, 1).cpu().float()[mask].numpy()
+            for signal, arr in (("input", x), ("output", y)):
+                ds = self._file[f"layer_{layer_idx:03d}/{signal}"]
+                n_new = arr.shape[0]
+                ds.resize(ds.shape[0] + n_new, axis=0)
+                ds[-n_new:] = arr
             return output_
         return hook
 
@@ -76,7 +80,7 @@ class GateTracker():
         for idx, layer in enumerate(self.gemma_lm.layers):
             handle = layer.mlp.register_forward_hook(self.make_mlp_hook(idx))
             self.hooks.append(handle)
-        print(f"Added {len(self.hooks)} hooks -> writing to {self.output_dir}/")
+        print(f"Added {len(self.hooks)} hooks.")
 
     def clear_hooks(self):
         "Remove all hooks registered by this tracker."
@@ -119,7 +123,7 @@ def batch_iter(texts: list[str], batch_size: int):
         yield texts[i : i + batch_size]
 
 
-tracker = GateTracker(gemma_lm, output_dir="activations")
+tracker = GateTracker(gemma_lm, output_path="activations.h5")
 tracker.register_hooks()
 
 print("Evaluating model...")
@@ -132,7 +136,8 @@ for batch_texts in tqdm(batch_iter(texts, BATCH_SIZE), total=len(texts) // BATCH
         truncation=True,
         max_length=MAX_LENGTH,
     ).to(model.device)
+    tracker.attention_mask = inputs["attention_mask"]
     model(**inputs)   # activations are streamed to disk via hooks
 
 tracker.close()
-print("Done. Parquet files written to activations/")
+print("Done. Activations written to activations.h5")
