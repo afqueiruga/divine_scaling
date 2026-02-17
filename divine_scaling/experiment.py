@@ -17,11 +17,11 @@ import tqdm
 try:
     from .newton_optimizer import Newton, set_grad
     from .models import build_model
-    from . import problems
+    from .problems import problem_factory_1d
 except ImportError:
     from models import build_model
     from newton_optimizer import Newton, set_grad
-    import problems
+    from problems import problem_factory_1d
 
 device = "cpu"
 dtype = torch.float64
@@ -105,17 +105,26 @@ def optimize_newton_cascaded(
     return loss
 
 
+def optimize_multiplexed(model, criterion, X_train, Y_train, cfg: ExperimentConfig) -> float:
+    if cfg.optimizer == "adam":
+        return optimize_adam(model, criterion, X_train, Y_train)
+    elif cfg.optimizer == "newton":
+        return optimize_newton(model, criterion, X_train, Y_train, cfg.newton_kwargs)
+    elif cfg.optimizer == "newton_only_splines":
+        return optimize_newton_cascaded(model, criterion, X_train, Y_train, cfg.newton_kwargs, stages=["D", "U", "Q", "Q2"])
+    elif cfg.optimizer == "newton_splines_and_gates":
+        return optimize_newton_cascaded(model, criterion, X_train, Y_train, cfg.newton_kwargs, stages=["D", "U", "Q", "Q2", "G"])
+    elif cfg.optimizer == "newton_layer_cascade":
+        return optimize_newton_cascaded(model, criterion, X_train, Y_train, cfg.newton_kwargs, stages=["D", "U", "Q", "Q2", "G", "ALL"])
+    else:
+        raise ValueError(f"Optimizer {cfg.optimizer} not supported")
+
+
 @hydra.main(version_base=None, config_name="experiment_config")
 def main(cfg: ExperimentConfig) -> None:
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
-    try:
-        f = problems.PROBLEM_1D[cfg.problem]
-    except KeyError as e:
-        available = ", ".join(sorted(problems.PROBLEM_1D.keys()))
-        raise KeyError(f"Unknown 1D problem '{cfg.problem}'. Available: [{available}]") from e
-    X_train, Y_train, X_test, Y_test = problems.make_1d_problem(
-        f, cfg.n_data, device=device, dtype=dtype)
+    X_train, Y_train, X_test, Y_test = problem_factory_1d(cfg.problem, cfg.n_data)
     model = build_model(
         cfg.model_arch,
         cfg.n_hidden,
@@ -130,24 +139,7 @@ def main(cfg: ExperimentConfig) -> None:
     def get_test_loss(X, Y):
         return criterion(model(X), Y).item()
 
-    if cfg.optimizer == "adam":
-        final_loss = optimize_adam(model, criterion, X_train, Y_train)
-    elif cfg.optimizer == "newton":
-        final_loss = optimize_newton(model, criterion, X_train, Y_train, cfg.newton_kwargs)
-    elif cfg.optimizer == "newton_only_splines":
-        final_loss = optimize_newton_cascaded(
-            model, criterion, X_train, Y_train, cfg.newton_kwargs, stages=["D", "U", "Q", "Q2"]
-        )
-    elif cfg.optimizer == "newton_splines_and_gates":
-        final_loss = optimize_newton_cascaded(
-            model, criterion, X_train, Y_train, cfg.newton_kwargs, stages=["D", "U", "Q", "Q2", "G"]
-        )
-    elif cfg.optimizer == "newton_layer_cascade":
-        final_loss = optimize_newton_cascaded(
-            model, criterion, X_train, Y_train, cfg.newton_kwargs, stages=["D", "U", "Q", "Q2", "G", "ALL"]
-        )
-    else:
-        raise ValueError(f"Optimizer {cfg.optimizer} not supported")
+    final_loss = optimize_multiplexed(model, criterion, X_train, Y_train, cfg)
     test_mse = get_test_loss(X_test, Y_test)
     eval_x, eval_y = evaluate_model_on_linspace(model, n_points=1_000)
 
