@@ -15,8 +15,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import datasets
 
 
-CORPUS_LENGTH = 100
+CORPUS_LENGTH = 1_000
 CHECKPOINT = "google/gemma-3-1b-it"
+LAYERS = [12, 20]
 BATCH_SIZE = 8
 MAX_LENGTH = 512
 
@@ -35,14 +36,20 @@ class GateTracker():
                 ...
     """
 
-    def __init__(self, gemma_lm, output_path: str = "activations.h5"):
+    def __init__(
+        self,
+        gemma_lm,
+        output_path: str = "activations.h5",
+        layers: list[int] | None = None,
+    ):
         self.gemma_lm = gemma_lm
-        self.n_layers = len(gemma_lm.layers)
         self.d_model = gemma_lm.config.hidden_size
+        # Default to all layers; otherwise use the provided subset.
+        self.layers = layers if layers is not None else list(range(len(gemma_lm.layers)))
 
         self._file = h5py.File(output_path, "w")
-        # Pre-create one resizable dataset per layer per signal.
-        for i in range(self.n_layers):
+        # Pre-create one resizable dataset per tracked layer per signal.
+        for i in self.layers:
             grp = self._file.create_group(f"layer_{i:03d}")
             for signal in ("input", "output"):
                 grp.create_dataset(
@@ -76,11 +83,11 @@ class GateTracker():
         return hook
 
     def register_hooks(self):
-        "Register a forward hook on every MLP layer."
-        for idx, layer in enumerate(self.gemma_lm.layers):
-            handle = layer.mlp.register_forward_hook(self.make_mlp_hook(idx))
+        "Register a forward hook on each tracked MLP layer."
+        for idx in self.layers:
+            handle = self.gemma_lm.layers[idx].mlp.register_forward_hook(self.make_mlp_hook(idx))
             self.hooks.append(handle)
-        print(f"Added {len(self.hooks)} hooks.")
+        print(f"Added {len(self.hooks)} hooks on layers {self.layers}.")
 
     def clear_hooks(self):
         "Remove all hooks registered by this tracker."
@@ -123,7 +130,7 @@ def batch_iter(texts: list[str], batch_size: int):
         yield texts[i : i + batch_size]
 
 
-tracker = GateTracker(gemma_lm, output_path="activations.h5")
+tracker = GateTracker(gemma_lm, output_path="activations.h5", layers=LAYERS)
 tracker.register_hooks()
 
 print("Evaluating model...")
