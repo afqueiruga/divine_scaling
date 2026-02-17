@@ -17,15 +17,14 @@ import tqdm
 try:
     from .newton_optimizer import Newton, set_grad
     from .models import build_model
+    from . import problems
 except ImportError:
     from models import build_model
     from newton_optimizer import Newton, set_grad
+    import problems
 
 device = "cpu"
 dtype = torch.float64
-
-
-f_one_over_1_p_x2 = lambda x: 1.0 / (1.0 + x**2)
 
 
 @dataclass
@@ -34,6 +33,7 @@ class ExperimentConfig:
     n_hidden: int = 64       # int parameter to sweep
     activation: str = "relu"
     n_data: int = 2_000
+    problem: str = "one_over_1_p_x2"
     seed: int = 0
     apply_maso_init: bool = False
     maso_init_kwargs: dict[str, Any] = field(
@@ -46,11 +46,11 @@ class ExperimentConfig:
     hydra: Any = field(
         default_factory=lambda: {
             "run": {
-                "dir": "outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}_${model_arch}_${n_hidden}",
+                "dir": "outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}_${problem}_${model_arch}_${n_hidden}",
             },
             "sweep": {
                 "dir": "multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}",
-                "subdir": "${hydra.job.num}_${model_arch}_${n_hidden}",
+                "subdir": "${hydra.job.num}__${problem}_${model_arch}_${n_hidden}",
             },
         }
     )
@@ -58,19 +58,6 @@ class ExperimentConfig:
 
 cs = ConfigStore.instance()
 cs.store(name="experiment_config", node=ExperimentConfig)
-
-
-def make_1d_problem(f, N_data=2_000):
-    """Generate 1D train/test data from a scalar function f."""
-    X_train = 2 * np.random.rand(N_data, 1) - 1
-    X_test = np.linspace(-1, 1, N_data).reshape(-1, 1)
-    Y_train, Y_test = f(X_train), f(X_test)
-    return (
-        torch.from_numpy(X_train).to(device, dtype=dtype),
-        torch.from_numpy(Y_train).to(device, dtype=dtype),
-        torch.from_numpy(X_test).to(device, dtype=dtype),
-        torch.from_numpy(Y_test).to(device, dtype=dtype),
-    )
 
 
 @torch.no_grad()
@@ -122,7 +109,13 @@ def optimize_newton_cascaded(
 def main(cfg: ExperimentConfig) -> None:
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
-    X_train, Y_train, X_test, Y_test = make_1d_problem(f_one_over_1_p_x2, cfg.n_data)
+    try:
+        f = problems.PROBLEM_1D[cfg.problem]
+    except KeyError as e:
+        available = ", ".join(sorted(problems.PROBLEM_1D.keys()))
+        raise KeyError(f"Unknown 1D problem '{cfg.problem}'. Available: [{available}]") from e
+    X_train, Y_train, X_test, Y_test = problems.make_1d_problem(
+        f, cfg.n_data, device=device, dtype=dtype)
     model = build_model(
         cfg.model_arch,
         cfg.n_hidden,
