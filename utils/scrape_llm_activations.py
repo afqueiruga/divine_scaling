@@ -47,40 +47,27 @@ class GateTracker():
         self.output_dir = pathlib.Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        self._schema = pa.schema([
+        schema = pa.schema([
             pa.field("activation", pa.list_(pa.float32(), self.d_model))
         ])
-        # One ParquetWriter per layer, opened lazily on first write.
-        self._writers: list[pq.ParquetWriter | None] = [None] * self.n_layers
+        self._writers: list[pq.ParquetWriter] = [
+            pq.ParquetWriter(str(self.output_dir / f"layer_{i:03d}.parquet"), schema)
+            for i in range(self.n_layers)
+        ]
         self.hooks: list = []
-
-    # Writer helpers
-    def _writer(self, layer_idx: int) -> pq.ParquetWriter:
-        if self._writers[layer_idx] is None:
-            path = self.output_dir / f"layer_{layer_idx:03d}.parquet"
-            self._writers[layer_idx] = pq.ParquetWriter(str(path), self._schema)
-        return self._writers[layer_idx]
 
     def close(self):
         "Flush and close all open parquet writers."
-        for w in self._writers:
-            if w is not None:
-                w.close()
-        self._writers = [None] * self.n_layers
-
-    # ------------------------------------------------------------------
-    # Hook management
-    # ------------------------------------------------------------------
+        for w in self._writers: w.close()
 
     def make_mlp_hook(self, layer_idx: int):
         """Create a closure over layer_idx. Each layer gets its own hook."""
         def hook(module_, inputs_, output_):
             x = output_
-            if x.dim() == 3:
-                x = x.flatten(0, 1)             # (batch * seq, d_model)
+            if x.dim() == 3: x = x.flatten(0, 1)  # (batch * seq, d_model)
             flat = pa.array(x.cpu().float().numpy().ravel(), type=pa.float32())
             col = pa.FixedSizeListArray.from_arrays(flat, self.d_model)
-            self._writer(layer_idx).write_table(pa.table({"activation": col}))
+            self._writers[layer_idx].write_table(pa.table({"activation": col}))
             return output_
         return hook
 
@@ -89,7 +76,7 @@ class GateTracker():
         for idx, layer in enumerate(self.gemma_lm.layers):
             handle = layer.mlp.register_forward_hook(self.make_mlp_hook(idx))
             self.hooks.append(handle)
-        print(f"Added {len(self.hooks)} hooks → writing to {self.output_dir}/")
+        print(f"Added {len(self.hooks)} hooks -> writing to {self.output_dir}/")
 
     def clear_hooks(self):
         "Remove all hooks registered by this tracker."
@@ -108,6 +95,7 @@ class GateTracker():
             layer.mlp._forward_hooks.clear()
 
 
+print(f"Loading {CHECKPOINT}...")
 model = AutoModelForCausalLM.from_pretrained(CHECKPOINT, device_map="auto")
 tokenizer = AutoTokenizer.from_pretrained(CHECKPOINT)
 # Gemma has two different naming schemes depending on if there is a vision tower.
@@ -134,6 +122,7 @@ def batch_iter(texts: list[str], batch_size: int):
 tracker = GateTracker(gemma_lm, output_dir="activations")
 tracker.register_hooks()
 
+print("Evaluating model...")
 model.eval()
 for batch_texts in tqdm(batch_iter(texts, BATCH_SIZE), total=len(texts) // BATCH_SIZE):
     inputs = tokenizer(
