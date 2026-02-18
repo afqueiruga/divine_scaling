@@ -140,7 +140,10 @@ def fit_loglog_regression(x_vals: list[int], y_vals: list[float]) -> tuple[float
     return slope, intercept, r_squared
 
 
-def plot_metrics(grouped: dict[tuple[str, str], dict[int, list[float]]]) -> None:
+def plot_metrics(
+    grouped: dict[tuple[str, str], dict[int, list[float]]],
+    min_n_hidden_regression: int = 0,
+) -> None:
     plt.figure(figsize=(8, 5))
     ax = plt.gca()
 
@@ -152,19 +155,23 @@ def plot_metrics(grouped: dict[tuple[str, str], dict[int, list[float]]]) -> None
         label = f"{model_arch} ({activation})"
         (line,) = plt.loglog(x_vals, y_vals, label=label)
 
+        reg_pairs = [(x, y) for x, y in zip(x_vals, y_vals) if x >= min_n_hidden_regression]
+        reg_x_vals = [x for x, _ in reg_pairs]
+        reg_y_vals = [y for _, y in reg_pairs]
+
         try:
-            slope, intercept, r_squared = fit_loglog_regression(x_vals, y_vals)
-            fit_y_vals = [math.exp(intercept) * (x ** slope) for x in x_vals]
+            slope, intercept, r_squared = fit_loglog_regression(reg_x_vals, reg_y_vals)
+            fit_y_vals = [math.exp(intercept) * (x ** slope) for x in reg_x_vals]
             plt.loglog(
-                x_vals,
+                reg_x_vals,
                 fit_y_vals,
                 linestyle="--",
                 color=line.get_color(),
                 alpha=0.9,
                 label=f"{label} fit",
             )
-            anchor_idx = len(x_vals) // 2
-            anchor_x = x_vals[anchor_idx]
+            anchor_idx = len(reg_x_vals) // 2
+            anchor_x = reg_x_vals[anchor_idx]
             anchor_y = fit_y_vals[anchor_idx]
             x_offset = -18 if idx % 2 == 0 else -18
             y_offset = 18 if (idx // 2) % 2 == 0 else -22
@@ -275,6 +282,15 @@ def main() -> None:
         default=0,
         help="Random seed for selecting sampled trial functions.",
     )
+    parser.add_argument(
+        "--min_n_hidden_regression",
+        type=int,
+        default=0,
+        help=(
+            "Minimum n_hidden value (inclusive) for points included in the log-log regression fit. "
+            "Points below this threshold are still plotted but excluded from the regression."
+        ),
+    )
     args = parser.parse_args()
 
     if args.multirun_dir is not None and args.multirun_dirs is not None:
@@ -302,7 +318,7 @@ def main() -> None:
             raise FileNotFoundError(f"Not a directory: {multirun_dir}")
 
     grouped = load_metrics_from_dirs(multirun_dirs)
-    plot_metrics(grouped)
+    plot_metrics(grouped, min_n_hidden_regression=args.min_n_hidden_regression)
     if args.output is not None:
         output_path = args.output.resolve()
     elif len(multirun_dirs) == 1:
