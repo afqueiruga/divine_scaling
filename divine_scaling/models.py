@@ -185,7 +185,9 @@ class GQU2D(nn.Module):
 
 def build_model(
     model_arch: str,
+    n_x: int,
     n_hidden: int,
+    n_y: int,
     activation: str,
     apply_maso_init: bool,
     maso_init_kwargs: dict[str, Any],
@@ -213,9 +215,9 @@ def build_model(
     if model_arch not in model_map:
         raise ValueError(f"Unknown model_arch='{model_arch}'. Use one of {list(model_map)}")
     return model_map[model_arch](
-        n_x=1,
+        n_x=n_x,
         n_h=int(n_hidden),
-        n_y=1,
+        n_y=n_y,
         act=activation_map[activation],
         apply_maso_init=apply_maso_init,
         maso_init_kwargs=maso_init_kwargs,

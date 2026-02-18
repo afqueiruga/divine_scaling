@@ -14,14 +14,9 @@ from omegaconf import OmegaConf
 import tqdm
 
 
-try:
-    from .newton_optimizer import Newton, set_grad
-    from .models import build_model
-    from .problems import problem_factory_1d
-except ImportError:
-    from models import build_model
-    from newton_optimizer import Newton, set_grad
-    from problems import problem_factory_1d
+from .newton_optimizer import Newton, set_grad
+from .models import build_model
+from .problems import problem_factory
 
 device = "cpu"
 dtype = torch.float64
@@ -33,7 +28,7 @@ class ExperimentConfig:
     n_hidden: int = 64       # int parameter to sweep
     activation: str = "relu"
     n_data: int = 2_000
-    problem: str = "one_over_1_p_x2"
+    problem: str = "one_over_1_p_9x2"
     seed: int = 0
     apply_maso_init: bool = False
     maso_init_kwargs: dict[str, Any] = field(
@@ -124,10 +119,15 @@ def optimize_multiplexed(model, criterion, X_train, Y_train, cfg: ExperimentConf
 def main(cfg: ExperimentConfig) -> None:
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
-    X_train, Y_train, X_test, Y_test = problem_factory_1d(cfg.problem, cfg.n_data)
+    X_train, Y_train, X_test, Y_test = problem_factory(cfg.problem, cfg.n_data)
+    n_x = X_train.shape[1]
+    n_y = Y_train.shape[1]
+    print(X_train.shape, Y_train.shape, X_test.shape, Y_test.shape)
     model = build_model(
         cfg.model_arch,
+        n_x,
         cfg.n_hidden,
+        n_y,
         cfg.activation,
         cfg.apply_maso_init,
         cfg.maso_init_kwargs,
@@ -141,7 +141,7 @@ def main(cfg: ExperimentConfig) -> None:
 
     final_loss = optimize_multiplexed(model, criterion, X_train, Y_train, cfg)
     test_mse = get_test_loss(X_test, Y_test)
-    eval_x, eval_y = evaluate_model_on_linspace(model, n_points=1_000)
+    pred_test = model(X_test)
 
     output_dir = Path(HydraConfig.get().runtime.output_dir)
     config_fields = OmegaConf.to_container(cfg, resolve=True)
@@ -152,8 +152,8 @@ def main(cfg: ExperimentConfig) -> None:
         "train_mse": float(final_loss),
         "test_rmse": float(np.sqrt(test_mse)),
         "train_rmse": float(np.sqrt(final_loss)),
-        "eval_x": [float(v) for v in eval_x],
-        "eval_y": [float(v) for v in eval_y],
+        "eval_x": X_test.tolist(),
+        "eval_y": pred_test.tolist(),
     }
     with open(output_dir / "metrics.json", "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2, sort_keys=True)
