@@ -117,7 +117,7 @@ def main(cfg: ExperimentConfig) -> None:
     X_train, Y_train, X_test, Y_test = problem_factory(cfg.problem, cfg.n_data, dtype=dtype)
     n_x = X_train.shape[1]
     n_y = Y_train.shape[1]
-    print(X_train.shape, Y_train.shape, X_test.shape, Y_test.shape)
+    print("Dataset size: ", X_train.shape, Y_train.shape, X_test.shape, Y_test.shape)
     model = build_model(
         cfg.model_arch,
         n_x,
@@ -136,7 +136,7 @@ def main(cfg: ExperimentConfig) -> None:
 
     final_loss = optimize_multiplexed(model, criterion, X_train, Y_train, cfg)
     test_mse = get_test_loss(X_test, Y_test)
-    pred_test = model(X_test)
+    # pred_test = model(X_test)
 
     output_dir = Path(HydraConfig.get().runtime.output_dir)
     config_fields = OmegaConf.to_container(cfg, resolve=True)
@@ -147,8 +147,8 @@ def main(cfg: ExperimentConfig) -> None:
         "train_mse": float(final_loss),
         "test_rmse": float(np.sqrt(test_mse)),
         "train_rmse": float(np.sqrt(final_loss)),
-        "eval_x": X_test.tolist(),
-        "eval_y": pred_test.tolist(),
+        # "eval_x": X_test.tolist(),
+        # "eval_y": pred_test.tolist(),
     }
     with open(output_dir / "metrics.json", "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2, sort_keys=True)
