@@ -3,6 +3,8 @@ from typing import Callable
 import numpy as np
 import torch
 
+from .problems_activations import load_activations_plain
+
 
 # 1D problems
 f_x2 = lambda x: x**2
@@ -94,7 +96,10 @@ PROBLEM_2D = {
 def problem_factory(
     problem: str, n_data: int, device: str = "cpu", dtype: torch.dtype = torch.float64
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    if problem in PROBLEM_1D:
+    if problem.startswith("activations_"):
+        layer = int(problem.split("_")[1])
+        return load_activations_plain(path="data/activations.h5", layer=layer, dtype=dtype, n_data=n_data)
+    elif problem in PROBLEM_1D:
         f = PROBLEM_1D[problem]
         return make_1d_problem(f, n_data, device=device, dtype=dtype)
     elif problem in PROBLEM_2D:
