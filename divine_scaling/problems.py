@@ -99,6 +99,11 @@ def problem_factory(
     if problem.startswith("activations_"):
         layer = int(problem.split("_")[1])
         return load_activations_plain(path="data/activations.h5", layer=layer, dtype=dtype, n_data=n_data)
+    elif problem == "california_housing":
+        # Lazy import so sklearn is only required for sklearn-backed problems.
+        from .problems_sklearn import SKLEARN_PROBLEMS
+        loader = SKLEARN_PROBLEMS[problem]
+        return loader(n_data=n_data, device=device, dtype=dtype)
     elif problem in PROBLEM_1D:
         f = PROBLEM_1D[problem]
         return make_1d_problem(f, n_data, device=device, dtype=dtype)
