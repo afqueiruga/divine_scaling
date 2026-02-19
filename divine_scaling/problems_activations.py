@@ -38,11 +38,12 @@ def load_activations_plain(
     device: str = "cpu",
     dtype: torch.dtype = torch.float32,
     n_data: int = -1,
+    d_y_slice: int = 1,
     seed: int = 42,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     dataset = ActivationDataset(path, layer, device=device, dtype=dtype)
     # TODO: Split into train/val
-    return dataset.X[:n_data,...], dataset.Y[:n_data,...], dataset.X[:n_data,...], dataset.Y[:n_data,...]
+    return dataset.X[:n_data,...], dataset.Y[:n_data,:d_y_slice], dataset.X[:n_data,...], dataset.Y[:n_data,:d_y_slice]
 
 
 # Run this as a script to test the loader
