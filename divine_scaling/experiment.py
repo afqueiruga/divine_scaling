@@ -19,7 +19,6 @@ from .models import build_model
 from .problems import problem_factory
 
 device = "cpu"
-dtype = torch.float64
 
 
 @dataclass
@@ -30,6 +29,7 @@ class ExperimentConfig:
     n_data: int = 2_000
     problem: str = "one_over_1_p_9x2"
     seed: int = 0
+    dtype: str = "float64"
     apply_maso_init: bool = False
     maso_init_kwargs: dict[str, Any] = field(
         default_factory=lambda: {"alternating_gates": True}
@@ -53,14 +53,6 @@ class ExperimentConfig:
 
 cs = ConfigStore.instance()
 cs.store(name="experiment_config", node=ExperimentConfig)
-
-
-@torch.no_grad()
-def evaluate_model_on_linspace(model: nn.Module, n_points: int = 1_000) -> tuple[list[float], list[float]]:
-    """Evaluate model predictions on a fixed linspace in [-1, 1]."""
-    x = torch.linspace(-1.0, 1.0, n_points, device=device, dtype=dtype).reshape(-1, 1)
-    y = model(x)
-    return x.squeeze(-1).tolist(), y.squeeze(-1).tolist()
 
 
 def optimize_adam(model, criterion, X_train, Y_train):
@@ -91,12 +83,14 @@ def optimize_newton_cascaded(
     Y_train,
     newton_kwargs,
     stages: list[str],
+    single_stage_steps: int = 1,
 ):
     loss = None
     for stage in stages:
         any_enabled = set_grad(model, stage, enable_all=(stage == "ALL"))
         if not any_enabled: continue
-        loss = optimize_newton(model, criterion, X_train, Y_train, newton_kwargs, n_steps=100 if stage == "ALL" else 3)
+        n_steps = single_stage_steps if stage != "ALL" else 100
+        loss = optimize_newton(model, criterion, X_train, Y_train, newton_kwargs, n_steps=n_steps)
     return loss
 
 
@@ -117,9 +111,10 @@ def optimize_multiplexed(model, criterion, X_train, Y_train, cfg: ExperimentConf
 
 @hydra.main(version_base=None, config_name="experiment_config")
 def main(cfg: ExperimentConfig) -> None:
+    dtype = getattr(torch, cfg.dtype)
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
-    X_train, Y_train, X_test, Y_test = problem_factory(cfg.problem, cfg.n_data)
+    X_train, Y_train, X_test, Y_test = problem_factory(cfg.problem, cfg.n_data, dtype=dtype)
     n_x = X_train.shape[1]
     n_y = Y_train.shape[1]
     print(X_train.shape, Y_train.shape, X_test.shape, Y_test.shape)
