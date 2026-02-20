@@ -4,8 +4,27 @@ import os
 
 import pandas as pd
 import torch
-from sklearn.datasets import fetch_california_housing
+from sklearn.datasets import (
+    fetch_california_housing,
+    make_friedman1,
+    make_friedman2,
+    make_friedman3,
+)
 from sklearn.preprocessing import StandardScaler
+
+
+def _to_standardized_tensors(
+    X,
+    Y,
+    device: str = "cpu",
+    dtype: torch.dtype = torch.float64,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    scaler_X = StandardScaler().fit(X)
+    scaler_Y = StandardScaler().fit(Y)
+    X = torch.from_numpy(scaler_X.transform(X)).to(device, dtype=dtype)
+    Y = torch.from_numpy(scaler_Y.transform(Y)).to(device, dtype=dtype)
+    return X, Y, X, Y
+
 
 def load_california_housing(
     n_data: int = -1,
@@ -20,12 +39,7 @@ def load_california_housing(
         X = X[:n_data, ...]
         Y = Y[:n_data, ...]
 
-    scaler_X = StandardScaler().fit(X)
-    scaler_Y = StandardScaler().fit(Y)
-    X = torch.from_numpy(scaler_X.transform(X)).to(device, dtype=dtype)
-    Y = torch.from_numpy(scaler_Y.transform(Y)).to(device, dtype=dtype)
-
-    return X, Y, X, Y
+    return _to_standardized_tensors(X, Y, device=device, dtype=dtype)
 
 
 def load_airfoil(n_data: int = -1,
@@ -49,17 +63,47 @@ def load_airfoil(n_data: int = -1,
 
     Y = df.pop("Sound_pressure").values.reshape(-1, 1)
     X = df.values
-    scaler_X = StandardScaler().fit(X)
-    scaler_Y = StandardScaler().fit(Y)
-    X = torch.from_numpy(scaler_X.transform(X)).to(device, dtype=dtype)
-    Y = torch.from_numpy(scaler_Y.transform(Y)).to(device, dtype=dtype)
 
+    X, Y, _, _ = _to_standardized_tensors(X, Y, device=device, dtype=dtype)
     print(f"Airfoil — X: {X.shape}, y: {Y.shape}")
     print(f"Features: {df.columns.tolist()}")
     return X, Y, X, Y
 
 
+def load_friedman1(
+    n_data: int = -1,
+    device: str = "cpu",
+    dtype: torch.dtype = torch.float64,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    n_samples = n_data if n_data > 0 else 2_000
+    X, Y = make_friedman1(n_samples=n_samples, n_features=5, random_state=0)
+    return _to_standardized_tensors(X, Y.reshape(-1, 1), device=device, dtype=dtype)
+
+
+def load_friedman2(
+    n_data: int = -1,
+    device: str = "cpu",
+    dtype: torch.dtype = torch.float64,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    n_samples = n_data if n_data > 0 else 2_000
+    X, Y = make_friedman2(n_samples=n_samples, random_state=0)
+    return _to_standardized_tensors(X, Y.reshape(-1, 1), device=device, dtype=dtype)
+
+
+def load_friedman3(
+    n_data: int = -1,
+    device: str = "cpu",
+    dtype: torch.dtype = torch.float64,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    n_samples = n_data if n_data > 0 else 2_000
+    X, Y = make_friedman3(n_samples=n_samples, random_state=0)
+    return _to_standardized_tensors(X, Y.reshape(-1, 1), device=device, dtype=dtype)
+
+
 SKLEARN_PROBLEMS = {
     "california_housing": load_california_housing,
     "airfoil": load_airfoil,
+    "friedman1": load_friedman1,
+    "friedman2": load_friedman2,
+    "friedman3": load_friedman3,
 }
