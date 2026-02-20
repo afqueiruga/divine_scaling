@@ -4,6 +4,7 @@ import math
 from collections import defaultdict
 from pathlib import Path
 import random
+import re
 from statistics import mean
 
 import matplotlib.pyplot as plt
@@ -35,10 +36,21 @@ def detect_latest_multirun_dir() -> Path:
     return latest_dir
 
 
-def load_metrics(multirun_dir: Path) -> dict[tuple[str, str], dict[int, list[float]]]:
+def _get_problem_key(metrics: dict[str, object]) -> str:
+    """Return a normalized problem key from metrics."""
+    return str(metrics.get("problem", "unknown"))
+
+
+def _sanitize_for_filename(name: str) -> str:
+    """Sanitize arbitrary string to a filesystem-friendly slug."""
+    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", name.strip())
+    return sanitized.strip("_") or "unknown"
+
+
+def load_metrics(multirun_dir: Path) -> dict[str, dict[tuple[str, str], dict[int, list[float]]]]:
     """Load metrics.json files from one Hydra multirun directory."""
-    grouped: dict[tuple[str, str], dict[int, list[float]]] = defaultdict(
-        lambda: defaultdict(list)
+    grouped: dict[str, dict[tuple[str, str], dict[int, list[float]]]] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(list))
     )
     for child in sorted(multirun_dir.iterdir()):
         if not child.is_dir() or child.name.startswith("."):
@@ -50,30 +62,32 @@ def load_metrics(multirun_dir: Path) -> dict[tuple[str, str], dict[int, list[flo
             metrics = json.load(f)
         model_arch = str(metrics["model_arch"])
         activation = str(metrics.get("activation", "relu"))
+        problem = _get_problem_key(metrics)
         n_hidden = int(metrics["n_hidden"])
         test_rmse = float(metrics["test_rmse"])
-        grouped[(model_arch, activation)][n_hidden].append(test_rmse)
+        grouped[problem][(model_arch, activation)][n_hidden].append(test_rmse)
     return grouped
 
 
 def load_metrics_from_dirs(
     multirun_dirs: list[Path],
-) -> dict[tuple[str, str], dict[int, list[float]]]:
+) -> dict[str, dict[tuple[str, str], dict[int, list[float]]]]:
     """Load and merge metrics.json data from one or more Hydra multirun directories."""
-    grouped: dict[tuple[str, str], dict[int, list[float]]] = defaultdict(
-        lambda: defaultdict(list)
+    grouped: dict[str, dict[tuple[str, str], dict[int, list[float]]]] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(list))
     )
     for multirun_dir in multirun_dirs:
         per_dir_grouped = load_metrics(multirun_dir)
-        for key, hidden_to_rmse in per_dir_grouped.items():
-            for n_hidden, rmse_values in hidden_to_rmse.items():
-                grouped[key][n_hidden].extend(rmse_values)
+        for problem, per_problem_grouped in per_dir_grouped.items():
+            for key, hidden_to_rmse in per_problem_grouped.items():
+                for n_hidden, rmse_values in hidden_to_rmse.items():
+                    grouped[problem][key][n_hidden].extend(rmse_values)
     return grouped
 
 
-def load_trial_functions(multirun_dir: Path) -> list[dict[str, object]]:
+def load_trial_functions(multirun_dir: Path) -> dict[str, list[dict[str, object]]]:
     """Load per-trial function samples from metrics.json files."""
-    trials: list[dict[str, object]] = []
+    trials: dict[str, list[dict[str, object]]] = defaultdict(list)
     for child in sorted(multirun_dir.iterdir()):
         if not child.is_dir() or child.name.startswith("."):
             continue
@@ -88,7 +102,8 @@ def load_trial_functions(multirun_dir: Path) -> list[dict[str, object]]:
             continue
         if len(eval_x) != len(eval_y) or len(eval_x) == 0:
             continue
-        trials.append(
+        problem = _get_problem_key(metrics)
+        trials[problem].append(
             {
                 "trial_name": child.name,
                 "model_arch": str(metrics.get("model_arch", "unknown")),
@@ -101,11 +116,13 @@ def load_trial_functions(multirun_dir: Path) -> list[dict[str, object]]:
     return trials
 
 
-def load_trial_functions_from_dirs(multirun_dirs: list[Path]) -> list[dict[str, object]]:
+def load_trial_functions_from_dirs(multirun_dirs: list[Path]) -> dict[str, list[dict[str, object]]]:
     """Load and merge per-trial function samples from one or more multirun directories."""
-    merged_trials: list[dict[str, object]] = []
+    merged_trials: dict[str, list[dict[str, object]]] = defaultdict(list)
     for multirun_dir in multirun_dirs:
-        merged_trials.extend(load_trial_functions(multirun_dir))
+        per_dir_trials = load_trial_functions(multirun_dir)
+        for problem, problem_trials in per_dir_trials.items():
+            merged_trials[problem].extend(problem_trials)
     return merged_trials
 
 
@@ -142,6 +159,7 @@ def fit_loglog_regression(x_vals: list[int], y_vals: list[float]) -> tuple[float
 
 def plot_metrics(
     grouped: dict[tuple[str, str], dict[int, list[float]]],
+    problem: str,
     min_n_hidden_regression: int = 0,
 ) -> None:
     plt.figure(figsize=(8, 5))
@@ -194,14 +212,14 @@ def plot_metrics(
 
     plt.xlabel("n_hidden")
     plt.ylabel("test_rmse")
-    plt.title("Hydra sweep: test_rmse vs n_hidden")
+    plt.title(f"Hydra sweep ({problem}): test_rmse vs n_hidden")
     plt.grid(True, alpha=0.3)
     plt.legend(title="model_arch (activation)")
     plt.tight_layout()
 
 
 def plot_sample_functions(
-    trials: list[dict[str, object]], max_functions: int, sample_seed: int
+    trials: list[dict[str, object]], problem: str, max_functions: int, sample_seed: int
 ) -> None:
     if not trials:
         raise ValueError("No trial function samples found in metrics.json files.")
@@ -219,7 +237,7 @@ def plot_sample_functions(
         plt.plot(trial["x"], trial["y"], alpha=0.85, linewidth=1.5, label=label)
     plt.xlabel("x")
     plt.ylabel("model(x)")
-    plt.title(f"Sampled trial functions (n={count})")
+    plt.title(f"Sampled trial functions ({problem}, n={count})")
     plt.grid(True, alpha=0.3)
     plt.legend(fontsize=8)
     plt.tight_layout()
@@ -317,34 +335,70 @@ def main() -> None:
         if not multirun_dir.is_dir():
             raise FileNotFoundError(f"Not a directory: {multirun_dir}")
 
-    grouped = load_metrics_from_dirs(multirun_dirs)
-    plot_metrics(grouped, min_n_hidden_regression=args.min_n_hidden_regression)
-    if args.output is not None:
-        output_path = args.output.resolve()
-    elif len(multirun_dirs) == 1:
-        output_path = multirun_dirs[0] / "test_mse_vs_n_hidden.png"
-    else:
-        output_path = Path("joined_test_mse_vs_n_hidden.png").resolve()
-    plt.savefig(output_path, dpi=150)
+    grouped_by_problem = load_metrics_from_dirs(multirun_dirs)
+    problems = sorted(grouped_by_problem.keys())
+    if not problems:
+        raise ValueError("No metrics.json files with required fields were found.")
 
     print(f"Loaded {len(multirun_dirs)} multirun director{'y' if len(multirun_dirs) == 1 else 'ies'}.")
-    print(f"Saved plot to {output_path}")
+    print(f"Detected {len(problems)} problem key{'s' if len(problems) != 1 else ''}: {', '.join(problems)}")
+
+    if args.output is not None:
+        output_base = args.output.resolve()
+    elif len(multirun_dirs) == 1:
+        output_base = multirun_dirs[0] / "test_mse_vs_n_hidden.png"
+    else:
+        output_base = Path("joined_test_mse_vs_n_hidden.png").resolve()
+
+    output_paths: list[Path] = []
+    multiple_problems = len(problems) > 1
+    for problem in problems:
+        plot_metrics(
+            grouped_by_problem[problem],
+            problem=problem,
+            min_n_hidden_regression=args.min_n_hidden_regression,
+        )
+        if multiple_problems:
+            output_path = output_base.with_name(
+                f"{output_base.stem}_{_sanitize_for_filename(problem)}{output_base.suffix}"
+            )
+        else:
+            output_path = output_base
+        plt.savefig(output_path, dpi=150)
+        output_paths.append(output_path)
+        print(f"Saved plot for problem '{problem}' to {output_path}")
 
     if args.plot_sample_functions:
         if args.num_sample_functions <= 0:
             raise ValueError("--num_sample_functions must be positive.")
-        trials = load_trial_functions_from_dirs(multirun_dirs)
-        plot_sample_functions(trials, args.num_sample_functions, args.sample_seed)
+        trials_by_problem = load_trial_functions_from_dirs(multirun_dirs)
         if args.output is not None:
-            sample_output_path = output_path.with_name(
-                f"{output_path.stem}_sampled_functions{output_path.suffix}"
+            sample_output_base = output_base.with_name(
+                f"{output_base.stem}_sampled_functions{output_base.suffix}"
             )
         elif len(multirun_dirs) == 1:
-            sample_output_path = multirun_dirs[0] / "sampled_trial_functions.png"
+            sample_output_base = multirun_dirs[0] / "sampled_trial_functions.png"
         else:
-            sample_output_path = Path("joined_sampled_trial_functions.png").resolve()
-        plt.savefig(sample_output_path, dpi=150)
-        print(f"Saved sampled function plot to {sample_output_path}")
+            sample_output_base = Path("joined_sampled_trial_functions.png").resolve()
+
+        for problem in problems:
+            problem_trials = trials_by_problem.get(problem, [])
+            if not problem_trials:
+                print(
+                    f"No trial function samples for problem '{problem}'; "
+                    "skipping sampled function plot."
+                )
+                continue
+            plot_sample_functions(problem_trials, problem, args.num_sample_functions, args.sample_seed)
+            if multiple_problems:
+                sample_output_path = sample_output_base.with_name(
+                    f"{sample_output_base.stem}_{_sanitize_for_filename(problem)}"
+                    f"{sample_output_base.suffix}"
+                )
+            else:
+                sample_output_path = sample_output_base
+            plt.savefig(sample_output_path, dpi=150)
+            print(f"Saved sampled function plot for problem '{problem}' to {sample_output_path}")
 
     if args.show:
         plt.show()
