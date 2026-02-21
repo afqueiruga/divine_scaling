@@ -1,4 +1,5 @@
 import argparse
+from datetime import datetime
 import json
 import math
 from collections import defaultdict
@@ -8,6 +9,40 @@ import re
 from statistics import mean
 
 import matplotlib.pyplot as plt
+
+# Pretty labels for known problem keys from `problems.py` and `problems_sklearn.py`.
+PROBLEM_DISPLAY_NAMES: dict[str, str] = {
+    # problems.py (1D)
+    "x2": "x^2",
+    "x3": "x^3",
+    "cos": "cos(4x)",
+    "sin": "sin(4x)",
+    "sin_x2": "sin(4(x-1)^2)",
+    "one_over_1_p_x2": "1 / (1 + x^2)",
+    "one_over_1_p_9x2": "1 / (1 + 9x^2)",
+    "atan": "atan(x)",
+    # problems.py (2D)
+    "x2_y2": "x^2 + y^2",
+    "x3_y3": "x^3 + y^3",
+    "cos_x_cos_y": "cos(4x) cos(4y)",
+    "sin_x_sin_y": "sin(4x) sin(4y)",
+    "sin_x_sin_y_x2_y2": "sin(4x) sin(4y) (x^2 + y^2)",
+    "one_over_1_p_x2_y2": "1 / (1 + x^2 + y^2)",
+    "one_over_1_p_9x2_9y2": "1 / (1 + 9x^2 + 9y^2)",
+    "atan_x_atan_y": "atan(x) + atan(y)",
+    # problems_sklearn.py (raw names)
+    "california_housing": "California Housing",
+    "airfoil": "Airfoil Self-Noise",
+    "friedman1": "Friedman #1",
+    "friedman2": "Friedman #2",
+    "friedman3": "Friedman #3",
+    # problems.py real_* external names used by problem_factory
+    "real_california_housing": "California Housing",
+    "real_airfoil": "Airfoil Self-Noise",
+    "real_friedman1": "Friedman #1",
+    "real_friedman2": "Friedman #2",
+    "real_friedman3": "Friedman #3",
+}
 
 
 def detect_latest_multirun_dirs(n_latest: int) -> list[Path]:
@@ -45,6 +80,25 @@ def _sanitize_for_filename(name: str) -> str:
     """Sanitize arbitrary string to a filesystem-friendly slug."""
     sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", name.strip())
     return sanitized.strip("_") or "unknown"
+
+
+def _apply_paper_style(ax: plt.Axes) -> None:
+    """Apply a paper-friendly Times-like style to an existing axes."""
+    times_family = "Times New Roman"
+    ax.title.set_fontfamily(times_family)
+    ax.xaxis.label.set_fontfamily(times_family)
+    ax.yaxis.label.set_fontfamily(times_family)
+    for tick_label in ax.get_xticklabels() + ax.get_yticklabels():
+        tick_label.set_fontfamily(times_family)
+    legend = ax.get_legend()
+    if legend is not None:
+        for text in legend.get_texts():
+            text.set_fontfamily(times_family)
+        legend_title = legend.get_title()
+        if legend_title is not None:
+            legend_title.set_fontfamily(times_family)
+    for text in ax.texts:
+        text.set_fontfamily(times_family)
 
 
 def load_metrics(multirun_dir: Path) -> dict[str, dict[tuple[str, str], dict[int, list[float]]]]:
@@ -211,8 +265,8 @@ def plot_metrics(
             print(f"Skipping log-log regression for {label}: {exc}")
 
     plt.xlabel("n_hidden")
-    plt.ylabel("test_rmse")
-    plt.title(f"Hydra sweep ({problem}): test_rmse vs n_hidden")
+    plt.ylabel("RMSE")
+    plt.title(PROBLEM_DISPLAY_NAMES.get(problem, problem))
     plt.grid(True, alpha=0.3)
     plt.legend(title="model_arch (activation)")
     plt.tight_layout()
@@ -276,7 +330,10 @@ def main() -> None:
         "--output",
         type=Path,
         default=None,
-        help="Output image path (default: <multirun_dir>/test_mse_vs_n_hidden.png)",
+        help=(
+            "Output image filename/path. When omitted, files are written to "
+            "plot_outputs/ with a run timestamp in the filename."
+        ),
     )
     parser.add_argument(
         "--show",
@@ -343,12 +400,22 @@ def main() -> None:
     print(f"Loaded {len(multirun_dirs)} multirun director{'y' if len(multirun_dirs) == 1 else 'ies'}.")
     print(f"Detected {len(problems)} problem key{'s' if len(problems) != 1 else ''}: {', '.join(problems)}")
 
+    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = Path("plot_outputs").resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     if args.output is not None:
-        output_base = args.output.resolve()
+        output_name = args.output.name
+        output_base = (output_dir / output_name).resolve()
+        if output_base.suffix == "":
+            output_base = output_base.with_suffix(".png")
+        output_base = output_base.with_name(
+            f"{output_base.stem}_{run_timestamp}{output_base.suffix}"
+        )
     elif len(multirun_dirs) == 1:
-        output_base = multirun_dirs[0] / "test_mse_vs_n_hidden.png"
+        output_base = (output_dir / f"test_mse_vs_n_hidden_{run_timestamp}.png").resolve()
     else:
-        output_base = Path("joined_test_mse_vs_n_hidden.png").resolve()
+        output_base = (output_dir / f"joined_test_mse_vs_n_hidden_{run_timestamp}.png").resolve()
 
     output_paths: list[Path] = []
     multiple_problems = len(problems) > 1
@@ -365,8 +432,16 @@ def main() -> None:
         else:
             output_path = output_base
         plt.savefig(output_path, dpi=150)
+        ax = plt.gca()
+        fig = plt.gcf()
+        _apply_paper_style(ax)
+        fig.set_size_inches(3, 3)
+        fig.tight_layout()
+        paper_output_path = output_path.with_suffix(".pdf")
+        fig.savefig(paper_output_path, format="pdf")
         output_paths.append(output_path)
         print(f"Saved plot for problem '{problem}' to {output_path}")
+        print(f"Saved paper plot for problem '{problem}' to {paper_output_path}")
 
     if args.plot_sample_functions:
         if args.num_sample_functions <= 0:
@@ -377,9 +452,13 @@ def main() -> None:
                 f"{output_base.stem}_sampled_functions{output_base.suffix}"
             )
         elif len(multirun_dirs) == 1:
-            sample_output_base = multirun_dirs[0] / "sampled_trial_functions.png"
+            sample_output_base = (
+                output_dir / f"sampled_trial_functions_{run_timestamp}.png"
+            ).resolve()
         else:
-            sample_output_base = Path("joined_sampled_trial_functions.png").resolve()
+            sample_output_base = (
+                output_dir / f"joined_sampled_trial_functions_{run_timestamp}.png"
+            ).resolve()
 
         for problem in problems:
             problem_trials = trials_by_problem.get(problem, [])
