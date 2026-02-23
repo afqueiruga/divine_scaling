@@ -240,7 +240,7 @@ def plot_metrics(
                 linestyle="--",
                 color=line.get_color(),
                 alpha=0.9,
-                label=f"{label} fit",
+                label="_nolegend_",
             )
             anchor_idx = len(reg_x_vals) // 2
             anchor_x = reg_x_vals[anchor_idx]
@@ -268,7 +268,7 @@ def plot_metrics(
     plt.ylabel("RMSE")
     plt.title(PROBLEM_DISPLAY_NAMES.get(problem, problem))
     plt.grid(True, alpha=0.3)
-    plt.legend(title="model_arch (activation)")
+    plt.legend()
     plt.tight_layout()
 
 
