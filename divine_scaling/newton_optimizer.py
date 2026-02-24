@@ -4,6 +4,8 @@ from torch.func import jacrev, hessian, functional_call
 from torch.optim.lbfgs import _strong_wolfe
 import scipy
 import torch.nn as nn
+import numpy as np
+import warnings
 
 
 def set_grad(
@@ -112,6 +114,163 @@ def solve_with_preconditioning(H, g, diag_clamp=1e-12, t_reg=0.0, return_info=Tr
     return x_full
 
 
+@torch.no_grad()
+def solve_with_preconditioning_robust(
+    H,
+    g,
+    diag_clamp=1e-12,
+    t_reg=0.0,
+    return_info=False,
+    use_double_precision=True,
+    enforce_symmetry=True,
+    drop_near_zero_rows=True,
+    adaptive_damping=True,
+    enable_fallback=True,
+):
+    """
+    Robustly solve H x = -g using symmetric diagonal preconditioning.
+
+    The routine:
+    1) enforces symmetry,
+    2) drops numerically-null rows/cols using a tolerance,
+    3) adaptively increases Tikhonov damping if the solve is unstable,
+    4) falls back to least-squares / pseudo-inverse when needed.
+    """
+    n = H.shape[0]
+    device, out_dtype = H.device, H.dtype
+    solve_dtype = torch.float64 if use_double_precision else H.dtype
+    H_solve = H.to(dtype=solve_dtype)
+    g_solve = g.to(dtype=solve_dtype)
+
+    # Numerical Hessians can be slightly asymmetric; optionally symmetrize before solving.
+    H_sym = 0.5 * (H_solve + H_solve.T) if enforce_symmetry else H_solve
+    asymmetry_num = torch.linalg.norm(H_solve - H_solve.T)
+    asymmetry_den = torch.linalg.norm(H_solve).clamp_min(torch.finfo(solve_dtype).eps)
+    symmetry_residual = (asymmetry_num / asymmetry_den).item()
+
+    max_abs = H_sym.abs().max().item()
+    tiny = torch.finfo(solve_dtype).eps
+    zero_tol = max(diag_clamp, tiny) * max(1.0, max_abs)
+    if drop_near_zero_rows:
+        row_inf = H_sym.abs().amax(dim=1)
+        col_inf = H_sym.abs().amax(dim=0)
+        g_abs = g_solve.abs()
+        drop_mask = (row_inf <= zero_tol) & (col_inf <= zero_tol) & (g_abs <= zero_tol)
+    else:
+        drop_mask = torch.zeros(n, dtype=torch.bool, device=H_sym.device)
+    keep_mask = ~drop_mask
+    idx = torch.where(keep_mask)[0]
+    n_reduced = idx.numel()
+
+    info = {
+        "n": n,
+        "n_reduced": int(n_reduced),
+        "dropped_rows": int(drop_mask.sum().item()),
+        "symmetry_residual": symmetry_residual,
+        "stabilization": {
+            "use_double_precision": bool(use_double_precision),
+            "enforce_symmetry": bool(enforce_symmetry),
+            "drop_near_zero_rows": bool(drop_near_zero_rows),
+            "adaptive_damping": bool(adaptive_damping),
+            "enable_fallback": bool(enable_fallback),
+        },
+        "solver": None,
+        "attempts": 0,
+        "used_fallback": False,
+        "lambda_used": 0.0,
+        "condition_estimate": float("inf"),
+        "warning_messages": [],
+    }
+
+    x_full = torch.zeros(n, dtype=out_dtype, device=device)
+    if n_reduced == 0:
+        info["solver"] = "empty_reduced_system"
+        return (x_full, info) if return_info else x_full
+
+    H_reduced = H_sym[idx][:, idx]
+    g_reduced = g_solve[idx]
+    diag_abs = H_reduced.diag().abs().clamp(min=diag_clamp)
+    base_scale = torch.maximum(diag_abs.mean(), H_reduced.abs().mean()).clamp_min(diag_clamp)
+    base_lambda = float(t_reg) * float(base_scale.item())
+
+    max_attempts = 6 if adaptive_damping else 1
+    damping_growth = 10.0
+    cond_threshold = 1e12
+
+    y_precond = None
+    P_used = None
+    lambda_used = None
+    cond_est = float("inf")
+    warning_messages = []
+
+    eye = torch.eye(n_reduced, dtype=solve_dtype, device=H_reduced.device)
+    for k in range(max_attempts):
+        lam = base_lambda * (damping_growth ** k)
+        H_reg = H_reduced + lam * eye
+        diag_abs_reg = H_reg.diag().abs().clamp(min=diag_clamp)
+        P = 1.0 / torch.sqrt(diag_abs_reg)
+        H_precond = H_reg * P.unsqueeze(1) * P.unsqueeze(0)
+        g_precond = P * g_reduced
+        H_np = H_precond.detach().cpu().numpy()
+        g_np = g_precond.detach().cpu().numpy()
+
+        try:
+            cond_est = float(np.linalg.cond(H_np))
+        except Exception:
+            cond_est = float("inf")
+
+        local_messages = []
+        try:
+            with warnings.catch_warnings(record=True) as ws:
+                warnings.simplefilter("always")
+                y_try = scipy.linalg.solve(
+                    H_np, -g_np, assume_a="sym", check_finite=False
+                )
+            local_messages = [str(w.message) for w in ws]
+            ill_warn = any("ill-conditioned" in msg.lower() for msg in local_messages)
+            if np.all(np.isfinite(y_try)) and not ill_warn and cond_est <= cond_threshold:
+                y_precond = y_try
+                P_used = P
+                lambda_used = lam
+                warning_messages = local_messages
+                info["solver"] = "solve"
+                info["attempts"] = k + 1
+                break
+        except Exception as e:
+            local_messages.append(str(e))
+
+        warning_messages = local_messages
+        info["attempts"] = k + 1
+
+    if y_precond is None and not enable_fallback:
+        raise scipy.linalg.LinAlgError(
+            f"Robust solve failed after {max_attempts} attempts; "
+            "fallback disabled."
+        )
+
+    if y_precond is None:
+        info["used_fallback"] = True
+        H_np = H_precond.detach().cpu().numpy()
+        g_np = g_precond.detach().cpu().numpy()
+        try:
+            y_precond = scipy.linalg.lstsq(H_np, -g_np, check_finite=False)[0]
+            info["solver"] = "lstsq"
+        except Exception:
+            y_precond = scipy.linalg.pinv(H_np, check_finite=False) @ (-g_np)
+            info["solver"] = "pinv"
+        P_used = P
+        lambda_used = lam
+
+    x_reduced = P_used * torch.from_numpy(y_precond).to(device=device, dtype=solve_dtype)
+    x_full[idx] = x_reduced.to(dtype=out_dtype)
+
+    info["attempts"] = max(info["attempts"], 1 if lambda_used is not None else 0)
+    info["lambda_used"] = float(0.0 if lambda_used is None else lambda_used)
+    info["condition_estimate"] = cond_est
+    info["warning_messages"] = warning_messages
+    return (x_full, info) if return_info else x_full
+
+
 class Newton(Optimizer):
     """Newton's method optimizer with Hessian computation."""
 
@@ -176,7 +335,7 @@ class Newton(Optimizer):
         # Compute Hessian and gradient at current position
         hessian_matrix, grad_vec = compute_hessian_and_grad(self._model, loss_fn, x, y)
         # Solve to get the ideal Newton step, which we will line search along.
-        newton_dir = solve_with_preconditioning(
+        newton_dir = solve_with_preconditioning_robust(
             hessian_matrix, grad_vec, t_reg=damping, return_info=False
         )
         # Compute initial loss and directional derivative

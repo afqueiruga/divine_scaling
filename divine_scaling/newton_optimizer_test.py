@@ -1,6 +1,7 @@
 import unittest
 import torch
 import torch.nn as nn
+from scipy.linalg import LinAlgError
 
 from divine_scaling import newton_optimizer
 
@@ -38,6 +39,121 @@ class NewtonOptimizerTest(unittest.TestCase):
         x = newton_optimizer.solve_with_preconditioning(H, g)
         # solve_with_preconditioning solves H x = -g.
         self.assertTrue(torch.allclose(x, torch.tensor([-1.0, -1.0])))
+
+    def test_solve_linear_system_with_info(self):
+        H = torch.tensor([[2.0, 0.0], [0.0, 4.0]])
+        g = torch.tensor([2.0, 8.0])
+        x, info = newton_optimizer.solve_with_preconditioning_robust(H, g, return_info=True)
+        self.assertTrue(torch.allclose(x, torch.tensor([-1.0, -2.0])))
+        self.assertIn("condition_estimate", info)
+        self.assertGreaterEqual(info["n_reduced"], 1)
+
+    def test_solve_handles_near_singular_system(self):
+        H = torch.tensor([[1.0, 1.0], [1.0, 1.0 + 1e-12]], dtype=torch.float32)
+        g = torch.tensor([1.0, 1.0], dtype=torch.float32)
+        x, info = newton_optimizer.solve_with_preconditioning_robust(
+            H, g, t_reg=1e-6, return_info=True
+        )
+        self.assertTrue(torch.isfinite(x).all())
+        self.assertIsInstance(info["solver"], str)
+
+    def test_original_solver_raises_on_singular_system(self):
+        H = torch.tensor([[1.0, 1.0], [1.0, 1.0]], dtype=torch.float32)
+        g = torch.tensor([1.0, 1.0], dtype=torch.float32)
+        with self.assertRaises(LinAlgError):
+            newton_optimizer.solve_with_preconditioning(H, g, t_reg=0.0)
+
+    def test_robust_solver_handles_singular_system_with_fallback(self):
+        H = torch.tensor([[1.0, 1.0], [1.0, 1.0]], dtype=torch.float32)
+        g = torch.tensor([1.0, 1.0], dtype=torch.float32)
+        x, info = newton_optimizer.solve_with_preconditioning_robust(
+            H, g, t_reg=0.0, return_info=True
+        )
+        self.assertTrue(torch.isfinite(x).all())
+        self.assertTrue(info["used_fallback"] or info["attempts"] > 1)
+        self.assertIn(info["solver"], {"solve", "lstsq", "pinv"})
+
+    def test_robust_solver_can_disable_fallback(self):
+        H = torch.tensor([[1.0, 1.0], [1.0, 1.0]], dtype=torch.float32)
+        g = torch.tensor([1.0, 1.0], dtype=torch.float32)
+        with self.assertRaises(LinAlgError):
+            newton_optimizer.solve_with_preconditioning_robust(
+                H,
+                g,
+                t_reg=0.0,
+                enable_fallback=False,
+                adaptive_damping=False,
+            )
+
+    def test_robust_solver_ablation_matrix(self):
+        H = torch.tensor([[1.0, 1.0], [1.0, 1.0]], dtype=torch.float32)
+        g = torch.tensor([1.0, 1.0], dtype=torch.float32)
+        cases = [
+            (
+                "none",
+                dict(
+                    use_double_precision=False,
+                    enforce_symmetry=False,
+                    drop_near_zero_rows=False,
+                    adaptive_damping=False,
+                    enable_fallback=False,
+                ),
+                False,
+            ),
+            (
+                "fallback_only",
+                dict(
+                    use_double_precision=False,
+                    enforce_symmetry=False,
+                    drop_near_zero_rows=False,
+                    adaptive_damping=False,
+                    enable_fallback=True,
+                ),
+                True,
+            ),
+            (
+                "adaptive_only",
+                dict(
+                    use_double_precision=True,
+                    enforce_symmetry=True,
+                    drop_near_zero_rows=True,
+                    adaptive_damping=True,
+                    enable_fallback=False,
+                ),
+                False,
+            ),
+            (
+                "all_on",
+                dict(
+                    use_double_precision=True,
+                    enforce_symmetry=True,
+                    drop_near_zero_rows=True,
+                    adaptive_damping=True,
+                    enable_fallback=True,
+                ),
+                True,
+            ),
+        ]
+        outcomes = {}
+        for name, kwargs, expect_success in cases:
+            with self.subTest(name=name):
+                try:
+                    x, info = newton_optimizer.solve_with_preconditioning_robust(
+                        H, g, t_reg=0.0, return_info=True, **kwargs
+                    )
+                    ok = bool(torch.isfinite(x).all())
+                    outcomes[name] = (ok, info["solver"], info["attempts"])
+                    self.assertTrue(ok)
+                    self.assertTrue(expect_success)
+                except LinAlgError:
+                    outcomes[name] = (False, "LinAlgError", 0)
+                    self.assertFalse(expect_success)
+
+        # Minimal machine-readable summary useful for quick MVP docs.
+        self.assertEqual(outcomes["none"][0], False)
+        self.assertEqual(outcomes["fallback_only"][0], True)
+        self.assertEqual(outcomes["adaptive_only"][0], False)
+        self.assertEqual(outcomes["all_on"][0], True)
 
     def test_optimize_linear_model_line_search_off(self):
         self._run_linear_regression_step(line_search_fn=None)
