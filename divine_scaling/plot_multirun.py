@@ -45,6 +45,15 @@ PROBLEM_DISPLAY_NAMES: dict[str, str] = {
     "real_friedman3": "Friedman #3",
 }
 
+# Optional per-problem/per-architecture bounds for log-log regression x-range.
+# If a pair is absent, regression falls back to --min_n_hidden_regression and no xmax cap.
+REGRESSION_X_RANGES: dict[str, dict[str, tuple[int, int | None]]] = {
+    "real_airfoil": {
+        "mlp": (10, 500),
+        "glu": (10, 100),
+    },
+}
+
 
 def detect_latest_multirun_dirs(n_latest: int) -> list[Path]:
     """Detect the latest N multirun directories in the default 'multirun' folder."""
@@ -104,9 +113,41 @@ def _apply_paper_style(ax: plt.Axes) -> None:
 
 def _adjust_slope_annotations(ax: plt.Axes) -> None:
     """Auto-place slope annotation texts while keeping arrows in-bounds."""
-    slope_texts = [text for text in ax.texts if text.get_text().startswith("m=")]
+    slope_texts = [text for text in ax.texts if text.get_text().startswith("slope=")]
     if slope_texts:
-        adjust_text(slope_texts, ax=ax, ensure_inside_axes=True)
+        # Repel labels from both other labels and plotted curves.
+        adjust_text(
+            slope_texts,
+            ax=ax,
+            objects=list(ax.lines),
+            ensure_inside_axes=True,
+            expand=(1.15, 1.25),
+            force_text=(0.2, 0.3),
+            force_static=(0.2, 0.3),
+        )
+        # Keep labels close to anchors to reduce edge escapes on small figures.
+        max_abs_offset_points = 26.0
+        for text in slope_texts:
+            x_off, y_off = text.get_position()
+            text.set_position(
+                (
+                    max(-max_abs_offset_points, min(max_abs_offset_points, float(x_off))),
+                    max(-max_abs_offset_points, min(max_abs_offset_points, float(y_off))),
+                )
+            )
+
+
+def _inward_offset(ax: plt.Axes, x: float, y: float, magnitude: float = 12.0) -> tuple[float, float]:
+    """Pick an initial text offset that points toward the center of the axes."""
+    x_min, x_max = ax.get_xlim()
+    y_min, y_max = ax.get_ylim()
+    if x_min <= 0 or y_min <= 0:
+        return (magnitude, magnitude)
+    x_frac = (math.log(x) - math.log(x_min)) / (math.log(x_max) - math.log(x_min))
+    y_frac = (math.log(y) - math.log(y_min)) / (math.log(y_max) - math.log(y_min))
+    x_off = -magnitude if x_frac > 0.5 else magnitude
+    y_off = -magnitude if y_frac > 0.5 else magnitude
+    return (x_off, y_off)
 
 
 def _apply_paper_layout(fig: plt.Figure) -> None:
@@ -241,15 +282,26 @@ def plot_metrics(
         label = f"{model_arch} ({activation})"
         (line,) = plt.loglog(x_vals, y_vals, label=label)
 
-        reg_pairs = [(x, y) for x, y in zip(x_vals, y_vals) if x >= min_n_hidden_regression]
+        arch_bounds = REGRESSION_X_RANGES.get(problem, {}).get(model_arch)
+        if arch_bounds is None:
+            xmin = min_n_hidden_regression
+            xmax = None
+        else:
+            xmin, xmax = arch_bounds
+
+        reg_pairs = [
+            (x, y)
+            for x, y in zip(x_vals, y_vals)
+            if x >= xmin and (xmax is None or x <= xmax)
+        ]
         reg_x_vals = [x for x, _ in reg_pairs]
         reg_y_vals = [y for _, y in reg_pairs]
 
         try:
             slope, intercept, r_squared = fit_loglog_regression(reg_x_vals, reg_y_vals)
-            fit_y_vals = [math.exp(intercept) * (x ** slope) for x in reg_x_vals]
+            fit_y_vals = [math.exp(intercept) * (x ** slope) for x in x_vals]
             plt.loglog(
-                reg_x_vals,
+                x_vals,
                 fit_y_vals,
                 linestyle="--",
                 color=line.get_color(),
@@ -258,22 +310,24 @@ def plot_metrics(
             )
             anchor_idx = len(reg_x_vals) // 2
             anchor_x = reg_x_vals[anchor_idx]
-            anchor_y = fit_y_vals[anchor_idx]
+            anchor_y = math.exp(intercept) * (anchor_x ** slope)
+            x_offset, y_offset = _inward_offset(ax, float(anchor_x), float(anchor_y))
             slope_texts.append(
                 ax.annotate(
-                    f"m={slope:.2f}",
+                    f"slope={slope:.2f}",
                     xy=(anchor_x, anchor_y),
-                    xytext=(0, 0),
+                    xytext=(x_offset, y_offset),
                     textcoords="offset points",
-                    fontsize=8,
-                    color=line.get_color(),
-                    arrowprops={"arrowstyle": "->", "color": line.get_color(), "lw": 1.0},
+                    fontsize=10,
+                    color="black",
+                    arrowprops={"arrowstyle": "->", "color": "black", "lw": 1.0},
                 )
             )
             print(
                 f"log-log regression [{label}]: "
                 f"log(test_rmse) = {intercept:.6f} + {slope:.6f} * log(n_hidden), "
-                f"r^2={r_squared:.6f}"
+                f"r^2={r_squared:.6f}, "
+                f"x-range=[{xmin}, {xmax if xmax is not None else 'inf'}]"
             )
         except ValueError as exc:
             print(f"Skipping log-log regression for {label}: {exc}")
