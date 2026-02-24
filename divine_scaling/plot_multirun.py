@@ -9,6 +9,7 @@ import re
 from statistics import mean
 
 import matplotlib.pyplot as plt
+from adjustText import adjust_text
 
 # Pretty labels for known problem keys from `problems.py` and `problems_sklearn.py`.
 PROBLEM_DISPLAY_NAMES: dict[str, str] = {
@@ -99,6 +100,18 @@ def _apply_paper_style(ax: plt.Axes) -> None:
             legend_title.set_fontfamily(times_family)
     for text in ax.texts:
         text.set_fontfamily(times_family)
+
+
+def _adjust_slope_annotations(ax: plt.Axes) -> None:
+    """Auto-place slope annotation texts while keeping arrows in-bounds."""
+    slope_texts = [text for text in ax.texts if text.get_text().startswith("m=")]
+    if slope_texts:
+        adjust_text(slope_texts, ax=ax, ensure_inside_axes=True)
+
+
+def _apply_paper_layout(fig: plt.Figure) -> None:
+    """Use fixed margins so the 3x3 PDF keeps a wide plotting region."""
+    fig.subplots_adjust(left=0.19, right=0.98, bottom=0.17, top=0.90)
 
 
 def load_metrics(multirun_dir: Path) -> dict[str, dict[tuple[str, str], dict[int, list[float]]]]:
@@ -218,8 +231,9 @@ def plot_metrics(
 ) -> None:
     plt.figure(figsize=(8, 5))
     ax = plt.gca()
+    slope_texts: list[plt.Annotation] = []
 
-    for idx, key in enumerate(sorted(grouped.keys())):
+    for key in sorted(grouped.keys()):
         model_arch, activation = key
         hidden_to_mse = grouped[key]
         x_vals = sorted(hidden_to_mse.keys())
@@ -245,16 +259,16 @@ def plot_metrics(
             anchor_idx = len(reg_x_vals) // 2
             anchor_x = reg_x_vals[anchor_idx]
             anchor_y = fit_y_vals[anchor_idx]
-            x_offset = -18 if idx % 2 == 0 else -18
-            y_offset = 18 if (idx // 2) % 2 == 0 else -22
-            ax.annotate(
-                f"slope={slope:.3f}",
-                xy=(anchor_x, anchor_y),
-                xytext=(x_offset, y_offset),
-                textcoords="offset points",
-                fontsize=9,
-                color=line.get_color(),
-                arrowprops={"arrowstyle": "->", "color": line.get_color(), "lw": 1.0},
+            slope_texts.append(
+                ax.annotate(
+                    f"m={slope:.2f}",
+                    xy=(anchor_x, anchor_y),
+                    xytext=(0, 0),
+                    textcoords="offset points",
+                    fontsize=8,
+                    color=line.get_color(),
+                    arrowprops={"arrowstyle": "->", "color": line.get_color(), "lw": 1.0},
+                )
             )
             print(
                 f"log-log regression [{label}]: "
@@ -266,10 +280,11 @@ def plot_metrics(
 
     plt.xlabel("n_hidden")
     plt.ylabel("RMSE")
-    plt.title(PROBLEM_DISPLAY_NAMES.get(problem, problem))
+    plt.title(PROBLEM_DISPLAY_NAMES.get(problem, problem), pad=4)
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
+    _adjust_slope_annotations(ax)
 
 
 def plot_sample_functions(
@@ -436,7 +451,8 @@ def main() -> None:
         fig = plt.gcf()
         _apply_paper_style(ax)
         fig.set_size_inches(3, 3)
-        fig.tight_layout()
+        _apply_paper_layout(fig)
+        _adjust_slope_annotations(ax)
         paper_output_path = output_path.with_suffix(".pdf")
         fig.savefig(paper_output_path, format="pdf")
         output_paths.append(output_path)
